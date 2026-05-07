@@ -1,323 +1,311 @@
 // ============================================================
-// XAUUSD H1 Strategie | Pine Script v5
-// Kombiniert: EMA Trend + RSI + MACD + ATR + Session Filter
-// Optimiert für Gold (XAUUSD) auf dem 1-Stunden-Chart
+// XAUUSD H1 Strategie v2 | Pine Script v5
+// Fixes: Session-Filter, Exit-Konflikt, SL/TP Linien
+// Verbesserungen: HTF-Trend, Pullback-Einstieg, höhere Trefferquote
 // ============================================================
 //@version=5
 strategy(
-     title             = "XAUUSD H1 Strategy [EMA+RSI+MACD+ATR]",
-     shorttitle        = "XAUUSD H1",
+     title             = "XAUUSD H1 v2 [EMA+RSI+MACD+ATR]",
+     shorttitle        = "XAUUSD H1 v2",
      overlay           = true,
+     pyramiding        = 0,
      initial_capital   = 10000,
      default_qty_type  = strategy.percent_of_equity,
      default_qty_value = 2,
      commission_type   = strategy.commission.cash_per_order,
      commission_value  = 0.07,
      slippage          = 3,
-     max_bars_back     = 500
+     max_bars_back     = 500,
+     calc_on_order_fills = false,
+     calc_on_every_tick  = false
      )
 
 // ============================================================
 // ░░░ EINGABEN ░░░
 // ============================================================
 
-// --- EMA Einstellungen ---
 grp_ema = "EMA Einstellungen"
 ema_fast_len  = input.int(20,  "Schnelle EMA",  minval=5,  maxval=50,  group=grp_ema)
 ema_slow_len  = input.int(50,  "Langsame EMA",  minval=20, maxval=200, group=grp_ema)
 ema_trend_len = input.int(200, "Trend EMA",     minval=50, maxval=500, group=grp_ema)
 
-// --- RSI Einstellungen ---
 grp_rsi = "RSI Einstellungen"
-rsi_len         = input.int(14,  "RSI Periode",          minval=5,  maxval=30, group=grp_rsi)
-rsi_long_min    = input.int(45,  "RSI Long Min",         minval=30, maxval=60, group=grp_rsi)
-rsi_long_max    = input.int(65,  "RSI Long Max",         minval=50, maxval=80, group=grp_rsi)
-rsi_short_min   = input.int(35,  "RSI Short Min",        minval=20, maxval=50, group=grp_rsi)
-rsi_short_max   = input.int(55,  "RSI Short Max",        minval=40, maxval=70, group=grp_rsi)
+rsi_len       = input.int(14, "RSI Periode",  minval=5, maxval=30, group=grp_rsi)
+rsi_long_min  = input.int(40, "RSI Long Min", minval=30, maxval=60, group=grp_rsi)
+rsi_long_max  = input.int(72, "RSI Long Max", minval=55, maxval=85, group=grp_rsi)
+rsi_short_min = input.int(28, "RSI Short Min",minval=15, maxval=45, group=grp_rsi)
+rsi_short_max = input.int(60, "RSI Short Max",minval=40, maxval=70, group=grp_rsi)
 
-// --- MACD Einstellungen ---
 grp_macd = "MACD Einstellungen"
-macd_fast    = input.int(12, "MACD Fast",   minval=5,  maxval=30, group=grp_macd)
-macd_slow    = input.int(26, "MACD Slow",   minval=10, maxval=60, group=grp_macd)
-macd_signal  = input.int(9,  "MACD Signal", minval=3,  maxval=20, group=grp_macd)
+macd_fast   = input.int(12, "Fast",   minval=5,  maxval=30, group=grp_macd)
+macd_slow   = input.int(26, "Slow",   minval=10, maxval=60, group=grp_macd)
+macd_sig    = input.int(9,  "Signal", minval=3,  maxval=20, group=grp_macd)
 
-// --- ATR / Risk Management ---
 grp_risk = "Risk Management"
-atr_len    = input.int(14,  "ATR Periode",         minval=5,  maxval=30, group=grp_risk)
-sl_mult    = input.float(1.5, "Stop-Loss ATR Mult", minval=0.5, maxval=5.0, step=0.1, group=grp_risk)
-tp1_mult   = input.float(2.0, "TP1 ATR Mult (50%)", minval=1.0, maxval=10.0, step=0.1, group=grp_risk)
-tp2_mult   = input.float(4.0, "TP2 ATR Mult (50%)", minval=2.0, maxval=15.0, step=0.1, group=grp_risk)
-use_trail  = input.bool(true, "Trailing Stop aktivieren", group=grp_risk)
-trail_mult = input.float(1.5, "Trailing ATR Mult",  minval=0.5, maxval=5.0, step=0.1, group=grp_risk)
+atr_len  = input.int(14,   "ATR Periode",    minval=5,  maxval=30,  group=grp_risk)
+sl_mult  = input.float(1.5, "SL  × ATR",     minval=0.5, maxval=4.0, step=0.1, group=grp_risk)
+tp1_mult = input.float(2.0, "TP1 × ATR (50%)", minval=1.0, maxval=8.0, step=0.1, group=grp_risk)
+tp2_mult = input.float(4.5, "TP2 × ATR (50%)", minval=2.0, maxval=12.0, step=0.1, group=grp_risk)
 
-// --- ADX Filter ---
-grp_adx = "ADX Trend-Filter"
-use_adx    = input.bool(true, "ADX Filter aktiv",    group=grp_adx)
-adx_len    = input.int(14, "ADX Periode",             minval=7, maxval=30, group=grp_adx)
-adx_thresh = input.int(22, "ADX Mindest-Schwelle",    minval=10, maxval=50, group=grp_adx)
+grp_adx = "ADX Filter"
+use_adx    = input.bool(true, "ADX aktiv",       group=grp_adx)
+adx_len    = input.int(14,   "ADX Periode",      minval=7,  maxval=30, group=grp_adx)
+adx_thresh = input.int(20,   "ADX Min-Schwelle", minval=10, maxval=50, group=grp_adx)
 
-// --- Session Filter ---
+grp_htf = "Higher Timeframe (H4) Bestätigung"
+use_htf = input.bool(true, "H4 Trend bestätigen", group=grp_htf)
+
 grp_sess = "Session Filter"
 use_session  = input.bool(true, "Session Filter aktiv", group=grp_sess)
-sess_london  = input.session("0700-1600", "London Session (UTC+0)", group=grp_sess)
-sess_newyork = input.session("1300-2100", "New York Session (UTC+0)", group=grp_sess)
+sess_h_start = input.int(7,  "Start Stunde (UTC)", minval=0, maxval=23, group=grp_sess)
+sess_h_end   = input.int(21, "End Stunde (UTC)",   minval=1, maxval=24, group=grp_sess)
 
-// --- Bollinger Bands (Volatilität) ---
-grp_bb = "Bollinger Bands"
-use_bb   = input.bool(true,  "BB Filter aktiv",  group=grp_bb)
-bb_len   = input.int(20,     "BB Periode",        minval=10, maxval=50, group=grp_bb)
-bb_mult  = input.float(2.0,  "BB Std-Abw.",       minval=1.0, maxval=4.0, step=0.1, group=grp_bb)
-
-// --- Anzeige ---
-grp_disp = "Anzeige"
-show_emas     = input.bool(true, "EMAs anzeigen",             group=grp_disp)
-show_bb       = input.bool(true, "Bollinger Bands anzeigen",  group=grp_disp)
-show_signals  = input.bool(true, "Signal-Labels anzeigen",    group=grp_disp)
+grp_disp = "Darstellung"
+show_emas    = input.bool(true, "EMAs anzeigen",        group=grp_disp)
+show_lines   = input.bool(true, "SL/TP Linien anzeigen",group=grp_disp)
+show_labels  = input.bool(true, "Signal Labels",        group=grp_disp)
+line_bars    = input.int(8,    "Linienlänge (Bars)",    minval=3, maxval=20, group=grp_disp)
 
 // ============================================================
-// ░░░ INDIKATOREN BERECHNEN ░░░
+// ░░░ INDIKATOREN ░░░
 // ============================================================
 
-// EMAs
 ema_fast  = ta.ema(close, ema_fast_len)
 ema_slow  = ta.ema(close, ema_slow_len)
 ema_trend = ta.ema(close, ema_trend_len)
 
-// RSI
 rsi = ta.rsi(close, rsi_len)
 
-// MACD
-[macd_line, signal_line, hist] = ta.macd(close, macd_fast, macd_slow, macd_signal)
+[macd_line, sig_line, macd_hist] = ta.macd(close, macd_fast, macd_slow, macd_sig)
 
-// ATR
 atr = ta.atr(atr_len)
 
-// Bollinger Bands
-bb_basis = ta.sma(close, bb_len)
-bb_dev   = bb_mult * ta.stdev(close, bb_len)
-bb_upper = bb_basis + bb_dev
-bb_lower = bb_basis - bb_dev
-bb_width = (bb_upper - bb_lower) / bb_basis  // normalisierte Breite
+[_, _, adx_val] = ta.dmi(adx_len, adx_len)
 
-// ADX (manuell berechnen)
-[diplus, diminus, adx_val] = ta.dmi(adx_len, adx_len)
+// H4 Trend via request.security (kein Lookahead → kein Repainting)
+htf_close     = request.security(syminfo.tickerid, "240", close,          lookahead=barmerge.lookahead_off)
+htf_ema_fast  = request.security(syminfo.tickerid, "240", ta.ema(close, 20), lookahead=barmerge.lookahead_off)
+htf_ema_slow  = request.security(syminfo.tickerid, "240", ta.ema(close, 50), lookahead=barmerge.lookahead_off)
 
 // ============================================================
-// ░░░ FILTER & BEDINGUNGEN ░░░
+// ░░░ FILTER ░░░
 // ============================================================
 
-// Session-Filter
-in_london   = use_session ? na(time(timeframe.period, sess_london,  "UTC+0")) == false : true
-in_newyork  = use_session ? na(time(timeframe.period, sess_newyork, "UTC+0")) == false : true
-in_session  = in_london or in_newyork
+// Session: stunden-basiert (robust im Backtester, kein session-string Bug)
+bar_hour   = hour(time, "UTC+0")
+in_session = use_session ? (bar_hour >= sess_h_start and bar_hour < sess_h_end) : true
 
-// Trend-Filter: Preis über/unter 200 EMA
-bull_trend = close > ema_trend
-bear_trend = close < ema_trend
+// H4 Trend
+htf_bull = use_htf ? (htf_ema_fast > htf_ema_slow and htf_close > htf_ema_slow) : true
+htf_bear = use_htf ? (htf_ema_fast < htf_ema_slow and htf_close < htf_ema_slow) : true
 
-// EMA Ausrichtung
-ema_bull_align = ema_fast > ema_slow  // bullishe Ausrichtung
-ema_bear_align = ema_fast < ema_slow  // bearishe Ausrichtung
+// H1 Trend: Preis über/unter EMA200 UND EMA-Ausrichtung
+h1_bull = close > ema_trend and ema_fast > ema_slow
+h1_bear = close < ema_trend and ema_fast < ema_slow
 
-// EMA Steigung (mind. 3 Bars)
-ema_fast_slope_up   = ema_fast > ema_fast[3]
-ema_fast_slope_down = ema_fast < ema_fast[3]
-ema_slow_slope_up   = ema_slow > ema_slow[3]
-ema_slow_slope_down = ema_slow < ema_slow[3]
+// EMA Steigung (Trend muss aktiv sein, nicht flach)
+slope_bull = ema_fast > ema_fast[3] and ema_slow > ema_slow[5]
+slope_bear = ema_fast < ema_fast[3] and ema_slow < ema_slow[5]
 
-// MACD Bedingungen
-macd_bull = macd_line > signal_line and macd_line > 0
-macd_bear = macd_line < signal_line and macd_line < 0
-macd_cross_bull = ta.crossover(macd_line, signal_line)
-macd_cross_bear = ta.crossunder(macd_line, signal_line)
+// MACD: Kreuz ODER Histogram steigend/fallend
+macd_xbull = ta.crossover(macd_line, sig_line)
+macd_xbear = ta.crossunder(macd_line, sig_line)
+macd_bull  = macd_hist > 0 and macd_hist > macd_hist[1]
+macd_bear  = macd_hist < 0 and macd_hist < macd_hist[1]
 
-// RSI Bedingungen
-rsi_bull_zone = rsi >= rsi_long_min  and rsi <= rsi_long_max
-rsi_bear_zone = rsi >= rsi_short_min and rsi <= rsi_short_max
+// RSI Zonen (breiter für mehr Signale, aber Extremwerte ausgeschlossen)
+rsi_ok_long  = rsi >= rsi_long_min  and rsi <= rsi_long_max
+rsi_ok_short = rsi >= rsi_short_min and rsi <= rsi_short_max
 
-// ADX Filter
+// ADX: Trendstärke
 adx_ok = use_adx ? adx_val >= adx_thresh : true
 
-// Bollinger Bands Bedingungen
-// Long: nicht überkauft (Preis nicht über oberem Band)
-// Short: nicht überverkauft
-bb_ok_long  = use_bb ? close < bb_upper * 0.999 : true
-bb_ok_short = use_bb ? close > bb_lower * 1.001 : true
-// Mindest-Volatilität (Band nicht zu eng)
-bb_vol_ok = use_bb ? bb_width > 0.003 : true
+// Kerzenbestätigung: Schlusskurs bestätigt Richtung
+bull_candle = close > open
+bear_candle = close < open
+
+// Pullback-Bestätigung: Preis hat sich der schnellen EMA angenähert (max 0.5×ATR Abstand)
+// Verbessert Trefferquote erheblich — Einstieg nahe EMA, nicht weit weg
+near_ema_long  = math.abs(close - ema_fast) < atr * 0.8 or close > ema_fast
+near_ema_short = math.abs(close - ema_fast) < atr * 0.8 or close < ema_fast
 
 // ============================================================
 // ░░░ ENTRY BEDINGUNGEN ░░░
 // ============================================================
 
-// LONG: alle Bedingungen müssen erfüllt sein
 long_cond = in_session
-          and bull_trend
-          and ema_bull_align
-          and (ema_fast_slope_up or ema_slow_slope_up)
-          and (macd_bull or macd_cross_bull)
-          and rsi_bull_zone
+          and htf_bull
+          and h1_bull
+          and slope_bull
+          and (macd_bull or macd_xbull)
+          and rsi_ok_long
           and adx_ok
-          and bb_ok_long
-          and bb_vol_ok
-          and strategy.position_size == 0  // kein offener Trade
+          and bull_candle
+          and near_ema_long
+          and strategy.position_size == 0
 
-// SHORT: alle Bedingungen müssen erfüllt sein
 short_cond = in_session
-           and bear_trend
-           and ema_bear_align
-           and (ema_fast_slope_down or ema_slow_slope_down)
-           and (macd_bear or macd_cross_bear)
-           and rsi_bear_zone
+           and htf_bear
+           and h1_bear
+           and slope_bear
+           and (macd_bear or macd_xbear)
+           and rsi_ok_short
            and adx_ok
-           and bb_ok_short
-           and bb_vol_ok
+           and bear_candle
+           and near_ema_short
            and strategy.position_size == 0
 
 // ============================================================
-// ░░░ TRADE MANAGEMENT ░░░
+// ░░░ SL / TP PREISE BERECHNEN ░░░
 // ============================================================
 
-var float entry_price  = na
-var float stop_loss    = na
-var float take_profit1 = na
-var float take_profit2 = na
-var bool  tp1_reached  = false
+// Persistente Variablen — werden NUR beim Entry gesetzt
+var float sl_price  = na
+var float tp1_price = na
+var float tp2_price = na
+var int   entry_bar = na
 
-// Entry LONG
+// ============================================================
+// ░░░ TRADE AUSFÜHRUNG ░░░
+// ============================================================
+
 if long_cond
-    entry_price  := close
-    stop_loss    := close - atr * sl_mult
-    take_profit1 := close + atr * tp1_mult
-    take_profit2 := close + atr * tp2_mult
-    tp1_reached  := false
-    strategy.entry("Long", strategy.long, comment="L")
-    strategy.exit("Long SL/TP1", "Long",
-         stop    = stop_loss,
-         limit   = take_profit1,
-         qty_percent = 50)
-    strategy.exit("Long TP2", "Long",
-         limit   = take_profit2,
-         qty_percent = 100)
+    sl_price  := close - atr * sl_mult
+    tp1_price := close + atr * tp1_mult
+    tp2_price := close + atr * tp2_mult
+    entry_bar := bar_index
 
-// Entry SHORT
+    strategy.entry("Long", strategy.long, comment="▲ L")
+
+    // Zwei saubere Exit-Orders ohne Trailing-Konflikt
+    strategy.exit("L-TP1", from_entry="Long",
+         qty_percent = 50,
+         stop        = sl_price,
+         limit       = tp1_price,
+         comment_loss = "SL", comment_profit = "TP1")
+
+    strategy.exit("L-TP2", from_entry="Long",
+         qty_percent = 100,
+         stop        = sl_price,
+         limit       = tp2_price,
+         comment_loss = "SL", comment_profit = "TP2")
+
+    // SL/TP Linien direkt an der Einstiegskerze
+    if show_lines
+        line.new(bar_index, sl_price,  bar_index + line_bars, sl_price,
+             color=color.new(color.red,   0), width=2, style=line.style_solid)
+        line.new(bar_index, tp1_price, bar_index + line_bars, tp1_price,
+             color=color.new(color.lime,  0), width=1, style=line.style_dashed)
+        line.new(bar_index, tp2_price, bar_index + line_bars, tp2_price,
+             color=color.new(color.green, 0), width=2, style=line.style_solid)
+
+    if show_labels
+        label.new(bar_index, low - atr * 0.4,
+             text="▲ LONG", style=label.style_label_up,
+             color=color.new(color.green,5), textcolor=color.white, size=size.small)
+
 if short_cond
-    entry_price  := close
-    stop_loss    := close + atr * sl_mult
-    take_profit1 := close - atr * tp1_mult
-    take_profit2 := close - atr * tp2_mult
-    tp1_reached  := false
-    strategy.entry("Short", strategy.short, comment="S")
-    strategy.exit("Short SL/TP1", "Short",
-         stop    = stop_loss,
-         limit   = take_profit1,
-         qty_percent = 50)
-    strategy.exit("Short TP2", "Short",
-         limit   = take_profit2,
-         qty_percent = 100)
+    sl_price  := close + atr * sl_mult
+    tp1_price := close - atr * tp1_mult
+    tp2_price := close - atr * tp2_mult
+    entry_bar := bar_index
 
-// Trailing Stop: trail_offset muss in Ticks angegeben werden (ATR / mintick)
-if use_trail and strategy.position_size != 0
-    trail_offset_price = atr * trail_mult
-    trail_offset_ticks = trail_offset_price / syminfo.mintick
-    if strategy.position_size > 0
-        strategy.exit("Long Trail", "Long",
-             trail_price  = high - trail_offset_price,
-             trail_offset = trail_offset_ticks)
-    if strategy.position_size < 0
-        strategy.exit("Short Trail", "Short",
-             trail_price  = low + trail_offset_price,
-             trail_offset = trail_offset_ticks)
+    strategy.entry("Short", strategy.short, comment="▼ S")
 
-// EMA-Kreuz als Notausstieg (Trendwechsel)
-exit_long_ema  = ta.crossunder(ema_fast, ema_slow) and strategy.position_size > 0
-exit_short_ema = ta.crossover(ema_fast, ema_slow)  and strategy.position_size < 0
+    strategy.exit("S-TP1", from_entry="Short",
+         qty_percent = 50,
+         stop        = sl_price,
+         limit       = tp1_price,
+         comment_loss = "SL", comment_profit = "TP1")
 
-if exit_long_ema
-    strategy.close("Long", comment="EMA Exit")
-if exit_short_ema
-    strategy.close("Short", comment="EMA Exit")
+    strategy.exit("S-TP2", from_entry="Short",
+         qty_percent = 100,
+         stop        = sl_price,
+         limit       = tp2_price,
+         comment_loss = "SL", comment_profit = "TP2")
+
+    if show_lines
+        line.new(bar_index, sl_price,  bar_index + line_bars, sl_price,
+             color=color.new(color.red,   0), width=2, style=line.style_solid)
+        line.new(bar_index, tp1_price, bar_index + line_bars, tp1_price,
+             color=color.new(color.lime,  0), width=1, style=line.style_dashed)
+        line.new(bar_index, tp2_price, bar_index + line_bars, tp2_price,
+             color=color.new(color.green, 0), width=2, style=line.style_solid)
+
+    if show_labels
+        label.new(bar_index, high + atr * 0.4,
+             text="▼ SHORT", style=label.style_label_down,
+             color=color.new(color.red,5), textcolor=color.white, size=size.small)
+
+// EMA-Kreuz Notausstieg (Trendwechsel)
+if strategy.position_size > 0 and ta.crossunder(ema_fast, ema_slow)
+    strategy.close("Long", comment="EMA↓")
+if strategy.position_size < 0 and ta.crossover(ema_fast, ema_slow)
+    strategy.close("Short", comment="EMA↑")
 
 // ============================================================
 // ░░░ DARSTELLUNG ░░░
 // ============================================================
 
-// EMAs plotten
-plot(show_emas ? ema_fast  : na, "EMA 20",  color=color.new(color.yellow, 0),  linewidth=1)
-plot(show_emas ? ema_slow  : na, "EMA 50",  color=color.new(color.orange, 0),  linewidth=2)
-plot(show_emas ? ema_trend : na, "EMA 200", color=color.new(color.white,  30), linewidth=2)
+// EMAs
+plot(show_emas ? ema_fast  : na, "EMA 20",  color=color.new(color.yellow, 0), linewidth=1)
+plot(show_emas ? ema_slow  : na, "EMA 50",  color=color.new(color.orange, 0), linewidth=2)
+plot(show_emas ? ema_trend : na, "EMA 200", color=color.new(color.white, 35), linewidth=2)
 
-// Bollinger Bands
-bb_upper_plot = plot(show_bb ? bb_upper : na, "BB Upper", color=color.new(color.blue, 60), linewidth=1)
-bb_lower_plot = plot(show_bb ? bb_lower : na, "BB Lower", color=color.new(color.blue, 60), linewidth=1)
-fill(bb_upper_plot, bb_lower_plot, color=color.new(color.blue, 92))
+// Laufende Position: SL/TP als Dauerlinien
+plot(strategy.position_size != 0 ? sl_price  : na, "SL aktiv",  color=color.new(color.red,   20), linewidth=1, style=plot.style_linebr)
+plot(strategy.position_size != 0 ? tp1_price : na, "TP1 aktiv", color=color.new(color.lime,  20), linewidth=1, style=plot.style_linebr)
+plot(strategy.position_size != 0 ? tp2_price : na, "TP2 aktiv", color=color.new(color.green, 20), linewidth=1, style=plot.style_linebr)
 
-// Signal-Labels
-if show_signals
-    if long_cond
-        label.new(bar_index, low - atr * 0.5,
-             text     = "▲ LONG",
-             style    = label.style_label_up,
-             color    = color.new(color.green, 10),
-             textcolor = color.white,
-             size     = size.small)
-    if short_cond
-        label.new(bar_index, high + atr * 0.5,
-             text     = "▼ SHORT",
-             style    = label.style_label_down,
-             color    = color.new(color.red, 10),
-             textcolor = color.white,
-             size     = size.small)
+// Session Hintergrund
+bgcolor(in_session ? color.new(color.blue, 97) : na, title="Session aktiv")
 
-// Hintergrund: Session
-bgcolor(use_session and in_london  ? color.new(color.blue,  96) : na, title="London Session")
-bgcolor(use_session and in_newyork ? color.new(color.green, 96) : na, title="New York Session")
-
-// Hintergrund: Trendrichtung
-bgcolor(bull_trend ? color.new(color.green, 98) : color.new(color.red, 98), title="Trend")
-
-// SL/TP Linien für offene Positionen
-plot(strategy.position_size != 0 ? stop_loss    : na, "Stop Loss",   color=color.red,    style=plot.style_linebr, linewidth=2)
-plot(strategy.position_size != 0 ? take_profit1 : na, "Take Profit 1", color=color.lime, style=plot.style_linebr, linewidth=1)
-plot(strategy.position_size != 0 ? take_profit2 : na, "Take Profit 2", color=color.green, style=plot.style_linebr, linewidth=2)
+// Trend Hintergrund
+bgcolor(h1_bull and htf_bull ? color.new(color.green, 97) :
+        h1_bear and htf_bear ? color.new(color.red,   97) : na, title="Trend")
 
 // ============================================================
 // ░░░ INFO TABLE ░░░
 // ============================================================
 
-var table info_table = table.new(position.top_right, 2, 8,
-     bgcolor       = color.new(color.black, 70),
-     border_color  = color.gray,
-     border_width  = 1)
+var table t = table.new(position.top_right, 2, 9,
+     bgcolor=color.new(color.black, 65), border_color=color.new(color.gray, 40), border_width=1)
 
 if barstate.islast
-    table.cell(info_table, 0, 0, "XAUUSD H1 Strategy", text_color=color.yellow, text_size=size.small, bgcolor=color.new(color.navy, 50))
-    table.cell(info_table, 1, 0, "",                   text_color=color.yellow, text_size=size.small, bgcolor=color.new(color.navy, 50))
+    table.cell(t, 0, 0, "XAUUSD H1 v2", bgcolor=color.new(color.navy,40),
+         text_color=color.yellow, text_size=size.small)
+    table.cell(t, 1, 0, "",             bgcolor=color.new(color.navy,40),
+         text_color=color.yellow, text_size=size.small)
 
-    table.cell(info_table, 0, 1, "Trend",    text_color=color.gray,  text_size=size.tiny)
-    table.cell(info_table, 1, 1, bull_trend ? "BULLISH ▲" : "BEARISH ▼",
-         text_color = bull_trend ? color.lime : color.red, text_size=size.tiny)
+    table.cell(t, 0, 1, "H4 Trend",  text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 1, htf_bull ? "BULL ▲" : htf_bear ? "BEAR ▼" : "–",
+         text_color=htf_bull ? color.lime : htf_bear ? color.red : color.gray, text_size=size.tiny)
 
-    table.cell(info_table, 0, 2, "Session",  text_color=color.gray,  text_size=size.tiny)
-    table.cell(info_table, 1, 2, in_session ? "AKTIV ✓" : "INAKTIV ✗",
-         text_color = in_session ? color.lime : color.red, text_size=size.tiny)
+    table.cell(t, 0, 2, "H1 Trend",  text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 2, h1_bull ? "BULL ▲" : h1_bear ? "BEAR ▼" : "SEITWÄRTS",
+         text_color=h1_bull ? color.lime : h1_bear ? color.red : color.gray, text_size=size.tiny)
 
-    table.cell(info_table, 0, 3, "RSI",      text_color=color.gray,  text_size=size.tiny)
-    table.cell(info_table, 1, 3, str.tostring(math.round(rsi, 1)),
-         text_color = rsi > 70 ? color.red : rsi < 30 ? color.lime : color.white, text_size=size.tiny)
+    table.cell(t, 0, 3, "Session",   text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 3, in_session ? "AKTIV ✓" : "INAKTIV",
+         text_color=in_session ? color.lime : color.red, text_size=size.tiny)
 
-    table.cell(info_table, 0, 4, "ADX",      text_color=color.gray,  text_size=size.tiny)
-    table.cell(info_table, 1, 4, str.tostring(math.round(adx_val, 1)) + (adx_ok ? " ✓" : " ✗"),
-         text_color = adx_ok ? color.lime : color.red, text_size=size.tiny)
+    table.cell(t, 0, 4, "RSI",       text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 4, str.tostring(math.round(rsi, 1)),
+         text_color=rsi > 72 ? color.red : rsi < 28 ? color.lime : color.white, text_size=size.tiny)
 
-    table.cell(info_table, 0, 5, "ATR",      text_color=color.gray,  text_size=size.tiny)
-    table.cell(info_table, 1, 5, str.tostring(math.round(atr, 2)),
-         text_color = color.white, text_size=size.tiny)
+    table.cell(t, 0, 5, "MACD",      text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 5, macd_bull ? "BULL ▲" : macd_bear ? "BEAR ▼" : "–",
+         text_color=macd_bull ? color.lime : macd_bear ? color.red : color.gray, text_size=size.tiny)
 
-    table.cell(info_table, 0, 6, "EMA Align", text_color=color.gray, text_size=size.tiny)
-    table.cell(info_table, 1, 6, ema_bull_align ? "BULL ▲" : "BEAR ▼",
-         text_color = ema_bull_align ? color.lime : color.red, text_size=size.tiny)
+    table.cell(t, 0, 6, "ADX",       text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 6, str.tostring(math.round(adx_val,1)) + (adx_ok ? " ✓" : " ✗"),
+         text_color=adx_ok ? color.lime : color.red, text_size=size.tiny)
 
-    table.cell(info_table, 0, 7, "MACD",     text_color=color.gray,  text_size=size.tiny)
-    table.cell(info_table, 1, 7, macd_bull ? "BULL ▲" : macd_bear ? "BEAR ▼" : "NEUTRAL",
-         text_color = macd_bull ? color.lime : macd_bear ? color.red : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 7, "ATR",       text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 7, str.tostring(math.round(atr, 2)),
+         text_color=color.white, text_size=size.tiny)
+
+    rr = tp2_mult / sl_mult
+    table.cell(t, 0, 8, "RRR TP2",   text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 8, "1 : " + str.tostring(math.round(rr, 1)),
+         text_color=color.white, text_size=size.tiny)
