@@ -1,12 +1,12 @@
 // ============================================================
-// XAUUSD H1 Strategie v2 | Pine Script v5
+// XAUUSD H1 Strategie v2 | Pine Script v6
 // Fixes: Session-Filter, Exit-Konflikt, SL/TP Linien
 // Verbesserungen: HTF-Trend, Pullback-Einstieg, höhere Trefferquote
 // ============================================================
-//@version=5
+//@version=6
 strategy(
      title             = "XAUUSD H1 v2 [EMA+RSI+MACD+ATR]",
-     shorttitle        = "XAUUSD H1 v2",
+     shorttitle        = "XAU H1 v2",
      overlay           = true,
      pyramiding        = 0,
      initial_capital   = 10000,
@@ -260,9 +260,9 @@ plot(strategy.position_size != 0 ? tp2_price : na, "TP2 aktiv", color=color.new(
 // Session Hintergrund
 bgcolor(in_session ? color.new(color.blue, 97) : na, title="Session aktiv")
 
-// Trend Hintergrund
-bgcolor(h1_bull and htf_bull ? color.new(color.green, 97) :
-        h1_bear and htf_bear ? color.new(color.red,   97) : na, title="Trend")
+// Trend Hintergrund (Variable verhindert Syntax-Fehler bei mehrzeiligem Ternary)
+trend_bg = h1_bull and htf_bull ? color.new(color.green, 97) : h1_bear and htf_bear ? color.new(color.red, 97) : na
+bgcolor(trend_bg, title="Trend")
 
 // ============================================================
 // ░░░ INFO TABLE ░░░
