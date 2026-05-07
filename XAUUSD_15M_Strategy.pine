@@ -1,0 +1,274 @@
+// ============================================================
+// XAUUSD 15M Scalping Strategie | Pine Script v5
+// Kombiniert: EMA Kreuz + RSI + MACD + BB + ATR + Session
+// Optimiert für Gold (XAUUSD) auf dem 15-Minuten-Chart
+// ============================================================
+//@version=5
+strategy(
+     title             = "XAUUSD 15M Scalping [EMA+RSI+MACD+BB]",
+     shorttitle        = "XAUUSD 15M",
+     overlay           = true,
+     initial_capital   = 10000,
+     default_qty_type  = strategy.percent_of_equity,
+     default_qty_value = 1,
+     commission_type   = strategy.commission.cash_per_order,
+     commission_value  = 0.07,
+     slippage          = 3,
+     max_bars_back     = 500
+     )
+
+// ============================================================
+// ░░░ EINGABEN ░░░
+// ============================================================
+
+grp_ema = "EMA Einstellungen"
+ema_fast_len  = input.int(9,   "Schnelle EMA", minval=3,  maxval=30,  group=grp_ema)
+ema_slow_len  = input.int(21,  "Langsame EMA", minval=10, maxval=100, group=grp_ema)
+ema_trend_len = input.int(55,  "Trend EMA",    minval=30, maxval=200, group=grp_ema)
+// Höherer TF Trend-Bestätigung via request.security (H1)
+use_htf_trend = input.bool(true, "H1 Trend bestätigen", group=grp_ema)
+
+grp_rsi = "RSI Einstellungen"
+rsi_len       = input.int(14, "RSI Periode",   minval=5, maxval=30, group=grp_rsi)
+rsi_ob        = input.int(70, "Überkauft",     minval=60, maxval=90, group=grp_rsi)
+rsi_os        = input.int(30, "Überverkauft",  minval=10, maxval=40, group=grp_rsi)
+rsi_bull_min  = input.int(50, "RSI Long Min",  minval=40, maxval=65, group=grp_rsi)
+rsi_bear_max  = input.int(50, "RSI Short Max", minval=35, maxval=60, group=grp_rsi)
+
+grp_macd = "MACD Einstellungen"
+macd_fast   = input.int(12, "MACD Fast",   minval=5,  maxval=30, group=grp_macd)
+macd_slow   = input.int(26, "MACD Slow",   minval=10, maxval=60, group=grp_macd)
+macd_signal = input.int(9,  "MACD Signal", minval=3,  maxval=20, group=grp_macd)
+
+grp_bb = "Bollinger Bands"
+bb_len  = input.int(20,    "BB Periode", minval=10, maxval=50, group=grp_bb)
+bb_mult = input.float(2.0, "BB Std-Abw.", minval=1.0, maxval=4.0, step=0.1, group=grp_bb)
+bb_squeeze_thresh = input.float(0.004, "BB Squeeze Schwelle", minval=0.001, maxval=0.02, step=0.001, group=grp_bb)
+
+grp_risk = "Risk Management"
+atr_len   = input.int(14,   "ATR Periode",         minval=5,  maxval=30, group=grp_risk)
+sl_mult   = input.float(1.2, "SL ATR Multiplikator", minval=0.5, maxval=3.0, step=0.1, group=grp_risk)
+tp1_mult  = input.float(1.5, "TP1 ATR Mult (60%)",   minval=1.0, maxval=5.0, step=0.1, group=grp_risk)
+tp2_mult  = input.float(3.0, "TP2 ATR Mult (40%)",   minval=2.0, maxval=10.0, step=0.1, group=grp_risk)
+
+grp_adx = "ADX Filter"
+use_adx    = input.bool(true, "ADX Filter aktiv",  group=grp_adx)
+adx_len    = input.int(14, "ADX Periode",           minval=7, maxval=30, group=grp_adx)
+adx_thresh = input.int(20, "ADX Mindest-Schwelle",  minval=10, maxval=40, group=grp_adx)
+
+grp_sess = "Session Filter (London + New York)"
+use_session = input.bool(true, "Session Filter aktiv", group=grp_sess)
+sess_active = input.session("0700-1700", "Aktive Handelszeit (UTC+0)", group=grp_sess)
+
+grp_disp = "Anzeige"
+show_emas    = input.bool(true, "EMAs anzeigen",  group=grp_disp)
+show_bb      = input.bool(true, "BB anzeigen",    group=grp_disp)
+show_signals = input.bool(true, "Labels anzeigen", group=grp_disp)
+
+// ============================================================
+// ░░░ HÖHERER TIMEFRAME (H1) TREND ░░░
+// ============================================================
+
+htf_ema_fast = request.security(syminfo.tickerid, "60", ta.ema(close, 20), lookahead=barmerge.lookahead_off)
+htf_ema_slow = request.security(syminfo.tickerid, "60", ta.ema(close, 50), lookahead=barmerge.lookahead_off)
+htf_close    = request.security(syminfo.tickerid, "60", close,              lookahead=barmerge.lookahead_off)
+
+htf_bull = use_htf_trend ? (htf_ema_fast > htf_ema_slow and htf_close > htf_ema_slow) : true
+htf_bear = use_htf_trend ? (htf_ema_fast < htf_ema_slow and htf_close < htf_ema_slow) : true
+
+// ============================================================
+// ░░░ INDIKATOREN ░░░
+// ============================================================
+
+ema_fast  = ta.ema(close, ema_fast_len)
+ema_slow  = ta.ema(close, ema_slow_len)
+ema_trend = ta.ema(close, ema_trend_len)
+
+rsi = ta.rsi(close, rsi_len)
+
+[macd_line, signal_line, hist] = ta.macd(close, macd_fast, macd_slow, macd_signal)
+
+atr = ta.atr(atr_len)
+
+bb_basis = ta.sma(close, bb_len)
+bb_dev   = bb_mult * ta.stdev(close, bb_len)
+bb_upper = bb_basis + bb_dev
+bb_lower = bb_basis - bb_dev
+bb_width = (bb_upper - bb_lower) / bb_basis
+
+[diplus, diminus, adx_val] = ta.dmi(adx_len, adx_len)
+
+// ============================================================
+// ░░░ FILTER ░░░
+// ============================================================
+
+in_session = use_session ? na(time(timeframe.period, sess_active, "UTC+0")) == false : true
+
+// Lokaler Trend (15M Chart)
+local_bull = close > ema_trend and ema_fast > ema_slow
+local_bear = close < ema_trend and ema_fast < ema_slow
+
+// EMA Kreuz (Einstiegssignal)
+ema_cross_bull = ta.crossover(ema_fast,  ema_slow)
+ema_cross_bear = ta.crossunder(ema_fast, ema_slow)
+
+// MACD Momentum
+macd_bull_momentum = hist > 0 and hist > hist[1]   // steigend positiv
+macd_bear_momentum = hist < 0 and hist < hist[1]   // fallend negativ
+macd_cross_bull    = ta.crossover(macd_line,  signal_line)
+macd_cross_bear    = ta.crossunder(macd_line, signal_line)
+
+// BB: Ausbruch aus Squeeze
+bb_no_squeeze = bb_width > bb_squeeze_thresh
+
+// ADX
+adx_ok = use_adx ? adx_val >= adx_thresh : true
+
+// RSI Filter
+rsi_bull_ok  = rsi >= rsi_bull_min and rsi < rsi_ob
+rsi_bear_ok  = rsi <= rsi_bear_max and rsi > rsi_os
+rsi_not_extreme = rsi > rsi_os and rsi < rsi_ob
+
+// ============================================================
+// ░░░ ENTRY BEDINGUNGEN ░░░
+// ============================================================
+
+// LONG
+long_cond = in_session
+          and htf_bull
+          and local_bull
+          and (ema_cross_bull or (ema_fast > ema_slow and macd_cross_bull))
+          and rsi_bull_ok
+          and (macd_bull_momentum or macd_cross_bull)
+          and adx_ok
+          and bb_no_squeeze
+          and close > bb_basis         // Preis über BB-Mittellinie
+          and strategy.position_size == 0
+
+// SHORT
+short_cond = in_session
+           and htf_bear
+           and local_bear
+           and (ema_cross_bear or (ema_fast < ema_slow and macd_cross_bear))
+           and rsi_bear_ok
+           and (macd_bear_momentum or macd_cross_bear)
+           and adx_ok
+           and bb_no_squeeze
+           and close < bb_basis        // Preis unter BB-Mittellinie
+           and strategy.position_size == 0
+
+// ============================================================
+// ░░░ TRADE AUSFÜHRUNG ░░░
+// ============================================================
+
+var float sl_price  = na
+var float tp1_price = na
+var float tp2_price = na
+
+if long_cond
+    sl_price  := close - atr * sl_mult
+    tp1_price := close + atr * tp1_mult
+    tp2_price := close + atr * tp2_mult
+    strategy.entry("Long", strategy.long, comment="↑ L")
+    strategy.exit("L Exit1", "Long",
+         stop        = sl_price,
+         limit       = tp1_price,
+         qty_percent = 60)
+    strategy.exit("L Exit2", "Long",
+         stop        = sl_price,
+         limit       = tp2_price,
+         qty_percent = 100)
+
+if short_cond
+    sl_price  := close + atr * sl_mult
+    tp1_price := close - atr * tp1_mult
+    tp2_price := close - atr * tp2_mult
+    strategy.entry("Short", strategy.short, comment="↓ S")
+    strategy.exit("S Exit1", "Short",
+         stop        = sl_price,
+         limit       = tp1_price,
+         qty_percent = 60)
+    strategy.exit("S Exit2", "Short",
+         stop        = sl_price,
+         limit       = tp2_price,
+         qty_percent = 100)
+
+// Trendwechsel-Ausstieg
+if ta.crossunder(ema_fast, ema_slow) and strategy.position_size > 0
+    strategy.close("Long", comment="EMA↓")
+if ta.crossover(ema_fast, ema_slow) and strategy.position_size < 0
+    strategy.close("Short", comment="EMA↑")
+
+// ============================================================
+// ░░░ DARSTELLUNG ░░░
+// ============================================================
+
+plot(show_emas ? ema_fast  : na, "EMA 9",  color=color.new(color.yellow, 0), linewidth=1)
+plot(show_emas ? ema_slow  : na, "EMA 21", color=color.new(color.orange, 0), linewidth=2)
+plot(show_emas ? ema_trend : na, "EMA 55", color=color.new(color.white,  30), linewidth=2)
+
+bb_up_p = plot(show_bb ? bb_upper : na, "BB Upper", color=color.new(color.purple, 50), linewidth=1)
+bb_lo_p = plot(show_bb ? bb_lower : na, "BB Lower", color=color.new(color.purple, 50), linewidth=1)
+fill(bb_up_p, bb_lo_p, color=color.new(color.purple, 92))
+
+if show_signals
+    if long_cond
+        label.new(bar_index, low - atr * 0.6,
+             text="▲ LONG", style=label.style_label_up,
+             color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+    if short_cond
+        label.new(bar_index, high + atr * 0.6,
+             text="▼ SHORT", style=label.style_label_down,
+             color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+
+// SL/TP Level
+plot(strategy.position_size != 0 ? sl_price  : na, "SL",  color=color.red,   style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size != 0 ? tp1_price : na, "TP1", color=color.lime,  style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size != 0 ? tp2_price : na, "TP2", color=color.green, style=plot.style_linebr, linewidth=2)
+
+// Session & HTF Hintergrund
+bgcolor(use_session and in_session ? color.new(color.blue, 96) : na)
+bgcolor(htf_bull and not htf_bear ? color.new(color.green, 97) : htf_bear and not htf_bull ? color.new(color.red, 97) : na)
+
+// ============================================================
+// ░░░ INFO TABLE ░░░
+// ============================================================
+
+var table t = table.new(position.top_right, 2, 9,
+     bgcolor=color.new(color.black, 70), border_color=color.gray, border_width=1)
+
+if barstate.islast
+    table.cell(t, 0, 0, "XAUUSD 15M Scalping", text_color=color.yellow, text_size=size.small, bgcolor=color.new(color.navy,50))
+    table.cell(t, 1, 0, "",                     text_color=color.yellow, text_size=size.small, bgcolor=color.new(color.navy,50))
+
+    table.cell(t, 0, 1, "H1 Trend",   text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 1, htf_bull ? "BULL ▲" : htf_bear ? "BEAR ▼" : "NEUTRAL",
+         text_color=htf_bull ? color.lime : htf_bear ? color.red : color.gray, text_size=size.tiny)
+
+    table.cell(t, 0, 2, "15M Trend",  text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 2, local_bull ? "BULL ▲" : local_bear ? "BEAR ▼" : "SEITWÄRTS",
+         text_color=local_bull ? color.lime : local_bear ? color.red : color.gray, text_size=size.tiny)
+
+    table.cell(t, 0, 3, "Session",    text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 3, in_session ? "AKTIV ✓" : "INAKTIV ✗",
+         text_color=in_session ? color.lime : color.red, text_size=size.tiny)
+
+    table.cell(t, 0, 4, "RSI",        text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 4, str.tostring(math.round(rsi, 1)),
+         text_color=rsi > rsi_ob ? color.red : rsi < rsi_os ? color.lime : color.white, text_size=size.tiny)
+
+    table.cell(t, 0, 5, "ADX",        text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 5, str.tostring(math.round(adx_val, 1)) + (adx_ok ? " ✓" : " ✗"),
+         text_color=adx_ok ? color.lime : color.red, text_size=size.tiny)
+
+    table.cell(t, 0, 6, "BB Squeeze", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 6, bb_no_squeeze ? "OFFEN ✓" : "SQUEEZE ✗",
+         text_color=bb_no_squeeze ? color.lime : color.orange, text_size=size.tiny)
+
+    table.cell(t, 0, 7, "ATR",        text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 7, str.tostring(math.round(atr, 2)),
+         text_color=color.white, text_size=size.tiny)
+
+    table.cell(t, 0, 8, "MACD",       text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 8, macd_bull_momentum ? "BULL ▲" : macd_bear_momentum ? "BEAR ▼" : "NEUTRAL",
+         text_color=macd_bull_momentum ? color.lime : macd_bear_momentum ? color.red : color.gray, text_size=size.tiny)
