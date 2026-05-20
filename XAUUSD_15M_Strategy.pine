@@ -103,7 +103,7 @@ atrAvg  = ta.sma(atrVal, 50)
 volOk   = atrVal >= atrAvg * atrMinMult and atrVal <= atrAvg * atrMaxMult
 
 // ADX (neu in v2)
-[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxLen)
+[_diPlus, _diMinus, adxVal] = ta.dmi(adxLen, adxLen)
 adxOk = useAdx ? adxVal >= adxThresh : true
 
 // RSI (neu in v2)
@@ -271,9 +271,9 @@ fill(p_cloudHigh, p_cloudLow,
      color=color.new(localBull ? color.green : color.red, 88),
      title="EMA Cloud")
 
-plot(htfEma,  "H4 EMA " + str.tostring(emaHtfLen),  color=color.new(color.orange, 0), linewidth=2)
-plot(emaFast, "EMA "    + str.tostring(emaFastLen),  color=color.new(color.blue,  10), linewidth=1)
-plot(emaSlow, "EMA "    + str.tostring(emaSlowLen),  color=color.new(color.purple,10), linewidth=2)
+plot(htfEma,  "H4 EMA HTF",  color=color.new(color.orange, 0), linewidth=2)
+plot(emaFast, "EMA Fast",    color=color.new(color.blue,  10), linewidth=1)
+plot(emaSlow, "EMA Slow",    color=color.new(color.purple,10), linewidth=2)
 
 plotshape(longSignal  and canTrade, "Long",  shape.triangleup,   location.belowbar, color.new(color.green, 0), size=size.small)
 plotshape(shortSignal and canTrade, "Short", shape.triangledown, location.abovebar, color.new(color.red,   0), size=size.small)
