@@ -1,0 +1,442 @@
+// ╔══════════════════════════════════════════════════════════════════════╗
+// ║  XAUUSD 15M Trend-Pullback Strategie  |  Pine Script v6            ║
+// ╠══════════════════════════════════════════════════════════════════════╣
+// ║  BESCHREIBUNG                                                        ║
+// ║  Trend-Pullback-Ansatz für Gold (XAUUSD) auf dem 15-Minuten-Chart.  ║
+// ║  EMA21 (schnell) + EMA50 (langsam) definieren den Trend-Bias.       ║
+// ║  Entry beim Rückzug in die EMA21-Zone + Bestätigungskerze.          ║
+// ║  Optionaler H1-HTF-Filter verhindert Kontra-Trend-Trades.           ║
+// ║  RSI-Bestätigung, ATR-Volatilitätsfilter, vollständiges             ║
+// ║  Risiko-Management (Break-Even, optionaler Trailing Stop).          ║
+// ╠══════════════════════════════════════════════════════════════════════╣
+// ║  EMPFOHLENES SETUP                                                   ║
+// ║  Symbol    : XAUUSD                                                  ║
+// ║  Timeframe : 15 Minuten                                              ║
+// ║  Kapital   : mind. $5.000 (für 1%-Risiko sinnvoll)                  ║
+// ╠══════════════════════════════════════════════════════════════════════╣
+// ║  WEBHOOK-FORMAT  (Alert → MT4/MT5-EA Bridge)                         ║
+// ║  TradingView handelt NICHT direkt bei Vantage oder einem anderen     ║
+// ║  Broker. Signale per Alert-Webhook an externe Bridge weiterleiten    ║
+// ║  (z.B. MT4/MT5-EA mit HTTP-Listener oder Drittanbieter-Bridge).     ║
+// ║                                                                      ║
+// ║  Long-Entry JSON:                                                    ║
+// ║  {"action":"BUY","symbol":"XAUUSD","side":"long",                   ║
+// ║   "entry":1950.25,"sl":1947.50,"tp":1956.25,                        ║
+// ║   "risk_percent":1.0,"time":"2024-01-15 14:30"}                     ║
+// ║                                                                      ║
+// ║  Short-Entry JSON:                                                   ║
+// ║  {"action":"SELL","symbol":"XAUUSD","side":"short",                 ║
+// ║   "entry":1950.25,"sl":1952.50,"tp":1945.25,                        ║
+// ║   "risk_percent":1.0,"time":"2024-01-15 14:30"}                     ║
+// ║                                                                      ║
+// ║  Exit JSON:                                                          ║
+// ║  {"action":"CLOSE","symbol":"XAUUSD","side":"long"}                 ║
+// ╠══════════════════════════════════════════════════════════════════════╣
+// ║  BACKTEST-WARNUNGEN                                                  ║
+// ║  • Gold-Spread bei Vantage: typ. 0.15–0.30 USD/oz. In den Strategy  ║
+// ║    Settings → Properties → Commission entsprechend setzen.          ║
+// ║  • Slippage auf 15M kann bei News 5+ Ticks betragen.               ║
+// ║  • Backtest ≠ Live: 15M ist anfällig für Curve-Fitting.             ║
+// ║    Mindestens 2 Jahre Testdaten + >100 Trades für Aussagekraft.     ║
+// ║  • Kein Repainting: Pullback nutzt nur bestätigte Bars [1];         ║
+// ║    HTF via lookahead=barmerge.lookahead_off abgesichert.            ║
+// ╠══════════════════════════════════════════════════════════════════════╣
+// ║  HAFTUNGSAUSSCHLUSS                                                  ║
+// ║  Nur zu Bildungszwecken. Kein System garantiert Gewinne.            ║
+// ║  Backtests ≠ Zukunft. Handel auf eigenes Risiko.                   ║
+// ╚══════════════════════════════════════════════════════════════════════╝
+
+//@version=6
+strategy(
+    title                   = "XAUUSD 15M Trend-Pullback [EMA+RSI+ATR] v6",
+    shorttitle              = "XAUUSD PB v6",
+    overlay                 = true,
+    pyramiding              = 0,
+    initial_capital         = 10000,
+    default_qty_type        = strategy.fixed,
+    default_qty_value       = 1,
+    commission_type         = strategy.commission.cash_per_order,
+    commission_value        = 0.50,
+    slippage                = 3,
+    max_bars_back           = 500,
+    process_orders_on_close = false
+)
+
+// ══════════════════════════════════════════════════════════════
+// INPUTS ─ TREND
+// ══════════════════════════════════════════════════════════════
+grpTrend   = "Trend"
+emaFastLen = input.int(21,   "EMA Schnell (Periode)",   minval=5,  maxval=100, group=grpTrend,
+     tooltip="Schnelle EMA für Trend-Bias. Long-Bias: EMA21>EMA50 & Close>EMA50.")
+emaSlowLen = input.int(50,   "EMA Langsam (Periode)",   minval=10, maxval=300, group=grpTrend,
+     tooltip="Langsame EMA. Long-Bias wenn Preis über dieser Linie.")
+useHtf     = input.bool(true,"HTF-Filter aktiv",                               group=grpTrend,
+     tooltip="H1-Bias muss mit 15M-Bias übereinstimmen — verhindert Kontra-Trend-Entries.")
+htfRes     = input.timeframe("60","HTF Timeframe",                             group=grpTrend,
+     tooltip="Höherer Timeframe. '60'=1H, '240'=4H.")
+htfEmaLen  = input.int(50,   "HTF EMA Periode",         minval=10, maxval=300, group=grpTrend,
+     tooltip="EMA-Periode auf dem HTF. Bullish wenn Close > HTF-EMA.")
+
+// ══════════════════════════════════════════════════════════════
+// INPUTS ─ ENTRY / RSI
+// ══════════════════════════════════════════════════════════════
+grpEntry    = "Entry / RSI"
+pbLookback  = input.int(5,  "Pullback Lookback (Bars)", minval=1, maxval=30, group=grpEntry,
+     tooltip="Anzahl bestätigter Bars, in denen nach EMA21-Berührung gesucht wird.")
+rsiLen      = input.int(14, "RSI Periode",              minval=5, maxval=30,  group=grpEntry,
+     tooltip="RSI-Berechnungsperiode. Standard: 14.")
+rsiLongMin  = input.int(50, "RSI Long Minimum",         minval=35, maxval=70, group=grpEntry,
+     tooltip="Long nur wenn RSI ≥ diesem Wert.")
+rsiShortMax = input.int(50, "RSI Short Maximum",        minval=30, maxval=65, group=grpEntry,
+     tooltip="Short nur wenn RSI ≤ diesem Wert.")
+rsiOb       = input.int(70, "RSI Überkauft (blockiert Long)",  minval=65, maxval=90, group=grpEntry,
+     tooltip="Kein Long wenn RSI über diesem Niveau.")
+rsiOs       = input.int(30, "RSI Überverkauft (blockiert Short)", minval=10, maxval=35, group=grpEntry,
+     tooltip="Kein Short wenn RSI unter diesem Niveau.")
+
+// ══════════════════════════════════════════════════════════════
+// INPUTS ─ VOLATILITÄT (ATR)
+// ══════════════════════════════════════════════════════════════
+grpVol     = "Volatilität (ATR)"
+atrLen     = input.int(14,   "ATR Periode",           minval=5,  maxval=50,              group=grpVol,
+     tooltip="ATR-Periode für SL, TP und Volatilitätsfilter.")
+atrMinVal  = input.float(0.0,"ATR Minimum (0=aus)",   minval=0.0, maxval=50.0, step=0.1, group=grpVol,
+     tooltip="Trade nur wenn ATR > diesem Wert (USD/oz). 0 = deaktiviert.")
+useAtrRise = input.bool(false,"ATR muss steigen",                                        group=grpVol,
+     tooltip="Zusatzfilter: Trade nur wenn ATR > ATR[1].")
+
+// ══════════════════════════════════════════════════════════════
+// INPUTS ─ RISK MANAGEMENT
+// ══════════════════════════════════════════════════════════════
+grpRisk   = "Risk Management"
+slMethod  = input.string("ATR","SL Methode", options=["ATR","Swing"],                    group=grpRisk,
+     tooltip="ATR = SL als ATR-Multiplikator | Swing = hinter letztem Swing-Tief/Hoch.")
+slAtrMult = input.float(1.5, "SL ATR Multiplikator", minval=0.3, maxval=10.0, step=0.1, group=grpRisk,
+     tooltip="Nur bei Methode 'ATR': SL = Entry ± (Mult × ATR).")
+swingBars = input.int(10,    "Swing Lookback (Bars)", minval=3, maxval=100,              group=grpRisk,
+     tooltip="Nur bei Methode 'Swing': Bars für ta.lowest/ta.highest. ATR-Puffer wird addiert.")
+rrRatio   = input.float(2.0, "Risk-Reward-Ratio",    minval=0.5, maxval=20.0, step=0.1, group=grpRisk,
+     tooltip="TP = Entry + RRR × SL-Abstand. Default 2.0 = 1:2 R/R.")
+riskPct   = input.float(1.0, "Risiko pro Trade (%)", minval=0.1, maxval=10.0, step=0.1, group=grpRisk,
+     tooltip="% des aktuellen Eigenkapitals, das pro Trade maximal riskiert wird.")
+useBE     = input.bool(true,  "Break-Even aktiv",                                       group=grpRisk,
+     tooltip="SL auf Entry schieben, sobald Floating Profit ≥ beR × initiales Risiko.")
+beR       = input.float(1.0, "Break-Even Aktivierung (×R)", minval=0.3, maxval=5.0, step=0.1, group=grpRisk,
+     tooltip="Break-Even wenn Profit ≥ diesem R-Multiple. Default 1.0R.")
+useTrail  = input.bool(false, "Trailing Stop aktiv",                                    group=grpRisk,
+     tooltip="ATR-basierter Trailing Stop, startet ab tsActR × R.")
+tsActR    = input.float(1.5, "Trailing Aktivierung (×R)", minval=0.5, maxval=10.0, step=0.1, group=grpRisk,
+     tooltip="Trailing Stop startet wenn Profit ≥ diesem R-Multiple.")
+tsAtrMult = input.float(1.5, "Trailing ATR Multiplikator", minval=0.3, maxval=10.0, step=0.1, group=grpRisk,
+     tooltip="Trailing SL folgt Preis mit Abstand = Mult × ATR.")
+
+// ══════════════════════════════════════════════════════════════
+// INPUTS ─ SESSION & ZEIT
+// ══════════════════════════════════════════════════════════════
+grpSession = "Session & Zeit"
+useSess    = input.bool(true,           "Session-Filter aktiv",                         group=grpSession,
+     tooltip="Trades nur in London + NY. Asien-Session ausgeschlossen.")
+sessStr    = input.session("0700-2000", "Handelszeit (Server-Tz.)",                     group=grpSession,
+     tooltip="Format HHMM-HHMM. Default 0700-2000 entspricht London+NY in Europe/Berlin.")
+sessTz     = input.string("Europe/Berlin","Zeitzone",                                   group=grpSession,
+     tooltip="Zeitzone für Session-Filter. 'Europe/Berlin'=UTC+1/+2, 'UTC'=UTC.")
+useNewsBlk = input.bool(false,          "News-Blackout aktiv",                          group=grpSession,
+     tooltip="Keine neuen Entries im Blackout-Fenster. Offene Positionen laufen weiter.")
+newsHStart = input.int(14, "Blackout Start Stunde (UTC)", minval=0, maxval=23,          group=grpSession)
+newsMStart = input.int(30, "Blackout Start Minute",       minval=0, maxval=59,          group=grpSession)
+newsHEnd   = input.int(15, "Blackout Ende Stunde (UTC)",  minval=0, maxval=23,          group=grpSession)
+newsMEnd   = input.int(0,  "Blackout Ende Minute",        minval=0, maxval=59,          group=grpSession)
+useFriFilt = input.bool(false,          "Freitag-Schutz aktiv",                        group=grpSession,
+     tooltip="Keine neuen Entries am Freitag ab definierter UTC-Stunde.")
+friCutHour = input.int(20, "Freitag Cutoff (UTC-Stunde)", minval=12, maxval=23,         group=grpSession)
+
+// ══════════════════════════════════════════════════════════════
+// INPUTS ─ ALERTS
+// ══════════════════════════════════════════════════════════════
+grpAlerts = "Alerts"
+useAlerts = input.bool(true,"Alerts senden (JSON-Webhook)", group=grpAlerts,
+     tooltip="Aktiviert alert()-Calls mit JSON-Payload für externe MT4/MT5-Bridge.")
+
+// ══════════════════════════════════════════════════════════════
+// INPUTS ─ BACKTEST / ANZEIGE
+// ══════════════════════════════════════════════════════════════
+grpBT     = "Backtest"
+showTable = input.bool(true,  "Info-Tabelle anzeigen", group=grpBT,
+     tooltip="Dashboard rechts oben ein-/ausblenden.")
+showBg    = input.bool(true,  "Session-Hintergrund",   group=grpBT,
+     tooltip="Blaue Hintergrundfarbe innerhalb der Handelszeit.")
+// Slippage und Commission: in Strategy Tester → Properties anpassen.
+// Default: commission_value=0.50 USD/Order, slippage=3 Ticks.
+
+// ══════════════════════════════════════════════════════════════
+// INDIKATOREN
+// ══════════════════════════════════════════════════════════════
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+rsi     = ta.rsi(close, rsiLen)
+atr     = ta.atr(atrLen)
+
+// ══════════════════════════════════════════════════════════════
+// HTF FILTER  (lookahead_off → kein Repainting)
+// ══════════════════════════════════════════════════════════════
+htfEma   = request.security(syminfo.tickerid, htfRes, ta.ema(close, htfEmaLen), lookahead=barmerge.lookahead_off)
+htfClose = request.security(syminfo.tickerid, htfRes, close,                    lookahead=barmerge.lookahead_off)
+
+// ══════════════════════════════════════════════════════════════
+// SIGNAL-LOGIK  (benannte Booleans → wartbar & erweiterbar)
+// ══════════════════════════════════════════════════════════════
+
+// Trend-Bias (15M)
+longBias  = emaFast > emaSlow and close > emaSlow
+shortBias = emaFast < emaSlow and close < emaSlow
+
+// HTF-Bestätigung
+htfBull = useHtf ? htfClose > htfEma : true
+htfBear = useHtf ? htfClose < htfEma : true
+
+// Pullback-Erkennung: nur abgeschlossene Bars [1..pbLookback] → repaint-safe
+// Long:  Low der letzten N Bars berührte EMA21 → aktuelle Kerze schließt wieder über EMA21
+// Short: High der letzten N Bars berührte EMA21 → aktuelle Kerze schließt wieder unter EMA21
+pullbackLong  = ta.lowest (low[1],  pbLookback) <= emaFast[1] and close > emaFast
+pullbackShort = ta.highest(high[1], pbLookback) >= emaFast[1] and close < emaFast
+
+// RSI-Filter
+rsiOkLong  = rsi >= rsiLongMin  and rsi < rsiOb
+rsiOkShort = rsi <= rsiShortMax and rsi > rsiOs
+
+// Volatilitäts-Filter (ATR)
+atrAboveMin = atrMinVal <= 0.0 or atr > atrMinVal
+atrTrending = useAtrRise ? atr > atr[1] : true
+volOk       = atrAboveMin and atrTrending
+
+// Session-Filter
+inSession = useSess ? not na(time(timeframe.period, sessStr, sessTz)) : true
+
+// News-Blackout (UTC-basiert, täglich wiederkehrend)
+curUtcMins  = hour(time, "UTC") * 60 + minute(time, "UTC")
+blkStartMin = newsHStart * 60 + newsMStart
+blkEndMin   = newsHEnd   * 60 + newsMEnd
+newsOk      = useNewsBlk ? not (curUtcMins >= blkStartMin and curUtcMins < blkEndMin) : true
+
+// Freitag-Schutz
+friBlocked = useFriFilt ? dayofweek == dayofweek.friday and hour(time, "UTC") >= friCutHour : false
+
+// Kombiniertes Session-Gate
+sessionOk = inSession and newsOk and not friBlocked
+
+// Entry-Signale (alle Bedingungen kombiniert)
+enterLong  = longBias  and htfBull and pullbackLong  and rsiOkLong  and volOk and sessionOk and strategy.position_size == 0
+enterShort = shortBias and htfBear and pullbackShort and rsiOkShort and volOk and sessionOk and strategy.position_size == 0
+
+// ══════════════════════════════════════════════════════════════
+// SL / TP BERECHNUNG  (alle Abstände ATR-relativ)
+// ══════════════════════════════════════════════════════════════
+atrBuf = 0.1 * atr   // kleiner ATR-Puffer für Swing-SL (Wick-Schutz)
+
+// ATR-Methode
+slDistAtr = slAtrMult * atr
+
+// Swing-Methode (ta.lowest/highest schaut auf aktuelle + vergangene Bars)
+swingLow  = ta.lowest (low,  swingBars)
+swingHigh = ta.highest(high, swingBars)
+slDistSwingLong  = math.max(close - (swingLow  - atrBuf), syminfo.mintick)
+slDistSwingShort = math.max((swingHigh + atrBuf) - close, syminfo.mintick)
+
+// Aktive Abstände je nach gewählter Methode
+slDistLong  = slMethod == "ATR" ? slDistAtr : slDistSwingLong
+slDistShort = slMethod == "ATR" ? slDistAtr : slDistSwingShort
+
+// Konkrete Preisniveaus
+slPriceLong  = close - slDistLong
+tpPriceLong  = close + rrRatio * slDistLong
+slPriceShort = close + slDistShort
+tpPriceShort = close - rrRatio * slDistShort
+
+// Positionsgröße: riskAmt / slDist → exakte %-Risiko-Steuerung
+riskAmt  = strategy.equity * riskPct / 100.0
+qtyLong  = slDistLong  > 0 ? riskAmt / slDistLong  : na
+qtyShort = slDistShort > 0 ? riskAmt / slDistShort : na
+
+// ══════════════════════════════════════════════════════════════
+// TRADE STATE  (var → bleibt über Bars erhalten)
+// ══════════════════════════════════════════════════════════════
+var float activeSL    = na
+var float activeTP    = na
+var float initSlDist  = na    // initiales Risiko für R-Berechnung
+var bool  beTriggered = false
+
+// ══════════════════════════════════════════════════════════════
+// ENTRY
+// ══════════════════════════════════════════════════════════════
+if enterLong
+    activeSL    := slPriceLong
+    activeTP    := tpPriceLong
+    initSlDist  := slDistLong
+    beTriggered := false
+    strategy.entry("Long",  strategy.long,  qty=qtyLong,  comment="PB Long ▲")
+    strategy.exit ("Long Exit",  from_entry="Long",  stop=activeSL, limit=activeTP)
+
+if enterShort
+    activeSL    := slPriceShort
+    activeTP    := tpPriceShort
+    initSlDist  := slDistShort
+    beTriggered := false
+    strategy.entry("Short", strategy.short, qty=qtyShort, comment="PB Short ▼")
+    strategy.exit ("Short Exit", from_entry="Short", stop=activeSL, limit=activeTP)
+
+// ══════════════════════════════════════════════════════════════
+// BREAK-EVEN & TRAILING STOP  (dynamisch je Bar aktualisiert)
+// ══════════════════════════════════════════════════════════════
+if strategy.position_size > 0 and not na(initSlDist)
+    ep = strategy.position_avg_price   // tatsächlicher Entry-Kurs
+
+    if useBE and not beTriggered
+        if high - ep >= beR * initSlDist
+            activeSL    := math.max(activeSL, ep)
+            beTriggered := true
+
+    if useTrail and high - ep >= tsActR * initSlDist
+        activeSL := math.max(activeSL, high - tsAtrMult * atr)
+
+    strategy.exit("Long Exit", from_entry="Long", stop=activeSL, limit=activeTP)
+
+if strategy.position_size < 0 and not na(initSlDist)
+    ep = strategy.position_avg_price
+
+    if useBE and not beTriggered
+        if ep - low >= beR * initSlDist
+            activeSL    := math.min(activeSL, ep)
+            beTriggered := true
+
+    if useTrail and ep - low >= tsActR * initSlDist
+        activeSL := math.min(activeSL, low + tsAtrMult * atr)
+
+    strategy.exit("Short Exit", from_entry="Short", stop=activeSL, limit=activeTP)
+
+// State zurücksetzen sobald Position geschlossen wurde
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    activeSL    := na
+    activeTP    := na
+    initSlDist  := na
+    beTriggered := false
+
+// ══════════════════════════════════════════════════════════════
+// ALERTS  (JSON-Webhook für externe MT4/MT5-Bridge)
+// ══════════════════════════════════════════════════════════════
+if useAlerts and enterLong
+    alert(
+         '{"action":"BUY","symbol":"'  + syminfo.ticker              +
+         '","side":"long","entry":'    + str.tostring(close,        "#.##") +
+         ',"sl":'                      + str.tostring(slPriceLong,  "#.##") +
+         ',"tp":'                      + str.tostring(tpPriceLong,  "#.##") +
+         ',"risk_percent":'            + str.tostring(riskPct,      "#.#")  +
+         ',"time":"'                   + str.format_time(timenow, "yyyy-MM-dd HH:mm") + '"}',
+         alert.freq_once_per_bar_close)
+
+if useAlerts and enterShort
+    alert(
+         '{"action":"SELL","symbol":"' + syminfo.ticker               +
+         '","side":"short","entry":'   + str.tostring(close,         "#.##") +
+         ',"sl":'                      + str.tostring(slPriceShort,  "#.##") +
+         ',"tp":'                      + str.tostring(tpPriceShort,  "#.##") +
+         ',"risk_percent":'            + str.tostring(riskPct,       "#.#")  +
+         ',"time":"'                   + str.format_time(timenow, "yyyy-MM-dd HH:mm") + '"}',
+         alert.freq_once_per_bar_close)
+
+if useAlerts and strategy.position_size == 0 and strategy.position_size[1] != 0
+    closeSide = strategy.position_size[1] > 0 ? "long" : "short"
+    alert(
+         '{"action":"CLOSE","symbol":"' + syminfo.ticker +
+         '","side":"' + closeSide + '"}',
+         alert.freq_once_per_bar_close)
+
+// Einfache alertcondition (ohne Webhook, für native TradingView-Alerts)
+alertcondition(enterLong,  title="Long Entry",  message="XAUUSD PB v6: Long-Signal")
+alertcondition(enterShort, title="Short Entry", message="XAUUSD PB v6: Short-Signal")
+
+// ══════════════════════════════════════════════════════════════
+// DARSTELLUNG
+// ══════════════════════════════════════════════════════════════
+
+// EMAs
+plot(emaFast, "EMA " + str.tostring(emaFastLen), color=color.new(color.yellow, 0), linewidth=1)
+plot(emaSlow, "EMA " + str.tostring(emaSlowLen), color=color.new(color.orange, 0), linewidth=2)
+
+// SL / TP Linien (nur bei offener Position sichtbar)
+plot(strategy.position_size != 0 ? activeSL : na, "Stop-Loss",  color=color.new(color.red,  0), style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size != 0 ? activeTP : na, "Take-Profit",color=color.new(color.lime, 0), style=plot.style_linebr, linewidth=2)
+
+// Break-Even Linie (Aqua, nur wenn BE ausgelöst wurde)
+plot(useBE and beTriggered and strategy.position_size != 0 ? strategy.position_avg_price : na,
+     "Break-Even", color=color.new(color.aqua, 0), style=plot.style_linebr, linewidth=1)
+
+// Entry-Marker
+plotshape(enterLong,  title="Long Entry",  style=shape.triangleup,   location=location.belowbar,
+     color=color.new(color.green, 0), size=size.small, text="L")
+plotshape(enterShort, title="Short Entry", style=shape.triangledown, location=location.abovebar,
+     color=color.new(color.red,   0), size=size.small, text="S")
+
+// Hintergründe
+bgcolor(showBg and inSession   ? color.new(color.blue,  96) : na, title="Session Hintergrund")
+bgcolor(showBg and not newsOk  ? color.new(color.red,   90) : na, title="News-Blackout")
+bgcolor(htfBull and not htfBear ? color.new(color.green, 97)
+     : not htfBull and htfBear  ? color.new(color.red,   97) : na, title="HTF Bias Hintergrund")
+
+// ══════════════════════════════════════════════════════════════
+// INFO TABLE  (rechts oben, via showTable ein-/ausblendbar)
+// ══════════════════════════════════════════════════════════════
+var table dash = table.new(position.top_right, 2, 10,
+     bgcolor=color.new(color.black, 70), border_color=color.gray, border_width=1)
+
+if showTable and barstate.islast
+    // Header
+    table.cell(dash, 0, 0, "XAUUSD 15M PB v6", text_color=color.yellow, text_size=size.small, bgcolor=color.new(color.navy, 40))
+    table.cell(dash, 1, 0, syminfo.ticker,       text_color=color.yellow, text_size=size.small, bgcolor=color.new(color.navy, 40))
+
+    // HTF Bias
+    htfLbl = htfBull and not htfBear ? "BULL ▲" : not htfBull and htfBear ? "BEAR ▼" : "NEUTRAL"
+    htfClr = htfBull and not htfBear ? color.lime : not htfBull and htfBear ? color.red : color.gray
+    table.cell(dash, 0, 1, "HTF Bias", text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 1, htfLbl,     text_color=htfClr,     text_size=size.tiny)
+
+    // 15M Bias
+    b15Lbl = longBias ? "BULL ▲" : shortBias ? "BEAR ▼" : "SEITWÄRTS"
+    b15Clr = longBias ? color.lime : shortBias ? color.red : color.gray
+    table.cell(dash, 0, 2, "15M Bias", text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 2, b15Lbl,    text_color=b15Clr,     text_size=size.tiny)
+
+    // Session
+    table.cell(dash, 0, 3, "Session",  text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 3, sessionOk ? "AKTIV ✓" : "INAKTIV ✗",
+         text_color=sessionOk ? color.lime : color.red, text_size=size.tiny)
+
+    // RSI
+    rsiClr = rsi > rsiOb ? color.red : rsi < rsiOs ? color.lime : color.white
+    table.cell(dash, 0, 4, "RSI", text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 4, str.tostring(math.round(rsi, 1)), text_color=rsiClr, text_size=size.tiny)
+
+    // ATR
+    atrLbl = str.tostring(math.round(atr, 2)) + (volOk ? " ✓" : " ✗")
+    table.cell(dash, 0, 5, "ATR",   text_color=color.gray,                        text_size=size.tiny)
+    table.cell(dash, 1, 5, atrLbl, text_color=volOk ? color.lime : color.orange,  text_size=size.tiny)
+
+    // Pullback Long
+    table.cell(dash, 0, 6, "PB Long",  text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 6, pullbackLong  ? "AKTIV" : "—",
+         text_color=pullbackLong ? color.lime : color.gray, text_size=size.tiny)
+
+    // Pullback Short
+    table.cell(dash, 0, 7, "PB Short", text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 7, pullbackShort ? "AKTIV" : "—",
+         text_color=pullbackShort ? color.lime : color.gray, text_size=size.tiny)
+
+    // Offene Position
+    posLbl = strategy.position_size > 0 ? "LONG  ▲" : strategy.position_size < 0 ? "SHORT ▼" : "FLAT"
+    posClr = strategy.position_size > 0 ? color.lime : strategy.position_size < 0 ? color.red : color.gray
+    table.cell(dash, 0, 8, "Position", text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 8, posLbl,     text_color=posClr,     text_size=size.tiny)
+
+    // Break-Even Status
+    table.cell(dash, 0, 9, "Break-Even", text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 9, useBE and beTriggered ? "AKTIV ✓" : "—",
+         text_color=useBE and beTriggered ? color.aqua : color.gray, text_size=size.tiny)
