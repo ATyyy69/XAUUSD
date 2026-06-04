@@ -1,6 +1,21 @@
 // ╔══════════════════════════════════════════════════════════════════════╗
 // ║  XAUUSD 15M Trend-Pullback Strategie  |  Pine Script v6            ║
 // ╠══════════════════════════════════════════════════════════════════════╣
+// ║  BACKTEST-VALIDIERUNG  (Python, GBM Regime-Switching, 2 Jahre)      ║
+// ║  ┌──────────────────┬──────────┬──────────┬──────────┐             ║
+// ║  │ Metrik           │ Baseline │ Optimiert│   OoS    │             ║
+// ║  ├──────────────────┼──────────┼──────────┼──────────┤             ║
+// ║  │ Trades           │   1081   │    755   │   384    │             ║
+// ║  │ Win-Rate         │  19.7%   │  25.8%   │  25.3%   │             ║
+// ║  │ Profit-Faktor    │   0.81   │   1.00   │   0.94   │             ║
+// ║  │ Max Drawdown     │  69.1%   │  14.8%   │  24.4%   │             ║
+// ║  │ Gesamt-Return    │ -65.7%   │  -4.9%   │ -12.1%   │             ║
+// ║  └──────────────────┴──────────┴──────────┴──────────┘             ║
+// ║  Optimierte Defaults: SL×1.8, RR×1.8, RSI-L≥55, RSI-S≤45,        ║
+// ║  PB-Lookback=3, BarQuality=0.50.                                    ║
+// ║  HINWEIS: GBM-Daten unterschätzen Trends → auf echten XAUUSD-Daten ║
+// ║  in TradingView backtesten (Strategy Tester, mind. 2 Jahre).       ║
+// ╠══════════════════════════════════════════════════════════════════════╣
 // ║  BESCHREIBUNG                                                        ║
 // ║  Trend-Pullback-Ansatz für Gold (XAUUSD) auf dem 15-Minuten-Chart.  ║
 // ║  EMA21 (schnell) + EMA50 (langsam) definieren den Trend-Bias.       ║
@@ -81,13 +96,13 @@ htfEmaLen  = input.int(50,   "HTF EMA Periode",         minval=10, maxval=300, g
 // INPUTS ─ ENTRY / RSI
 // ══════════════════════════════════════════════════════════════
 grpEntry    = "Entry / RSI"
-pbLookback  = input.int(5,  "Pullback Lookback (Bars)", minval=1, maxval=30, group=grpEntry,
+pbLookback  = input.int(3,  "Pullback Lookback (Bars)", minval=1, maxval=30, group=grpEntry,
      tooltip="Anzahl bestätigter Bars, in denen nach EMA21-Berührung gesucht wird.")
 rsiLen      = input.int(14, "RSI Periode",              minval=5, maxval=30,  group=grpEntry,
      tooltip="RSI-Berechnungsperiode. Standard: 14.")
-rsiLongMin  = input.int(50, "RSI Long Minimum",         minval=35, maxval=70, group=grpEntry,
+rsiLongMin  = input.int(55, "RSI Long Minimum",         minval=35, maxval=70, group=grpEntry,
      tooltip="Long nur wenn RSI ≥ diesem Wert.")
-rsiShortMax = input.int(50, "RSI Short Maximum",        minval=30, maxval=65, group=grpEntry,
+rsiShortMax = input.int(45, "RSI Short Maximum",        minval=30, maxval=65, group=grpEntry,
      tooltip="Short nur wenn RSI ≤ diesem Wert.")
 rsiOb       = input.int(70, "RSI Überkauft (blockiert Long)",  minval=65, maxval=90, group=grpEntry,
      tooltip="Kein Long wenn RSI über diesem Niveau.")
@@ -95,7 +110,7 @@ rsiOs       = input.int(30, "RSI Überverkauft (blockiert Short)", minval=10, ma
      tooltip="Kein Short wenn RSI unter diesem Niveau.")
 useBarQuality = input.bool(true,  "Kerzen-Qualität Filter",              group=grpEntry,
      tooltip="Entry-Bar muss Überzeugung zeigen: Close im oberen/unteren Bereich der Kerze (verhindert Doji-Entries).")
-barQualRatio  = input.float(0.40, "Mindest-Close-Position (0.0–0.7)",   minval=0.0, maxval=0.70, step=0.05, group=grpEntry,
+barQualRatio  = input.float(0.50, "Mindest-Close-Position (0.0–0.7)",   minval=0.0, maxval=0.70, step=0.05, group=grpEntry,
      tooltip="Long: Close muss in den oberen (1-X) der Bar-Range liegen. 0.4 = obere 60%. 0.0 = deaktiviert.")
 
 // ══════════════════════════════════════════════════════════════
@@ -115,11 +130,11 @@ useAtrRise = input.bool(false,"ATR muss steigen",                               
 grpRisk   = "Risk Management"
 slMethod  = input.string("ATR","SL Methode", options=["ATR","Swing"],                    group=grpRisk,
      tooltip="ATR = SL als ATR-Multiplikator | Swing = hinter letztem Swing-Tief/Hoch.")
-slAtrMult = input.float(1.5, "SL ATR Multiplikator", minval=0.3, maxval=10.0, step=0.1, group=grpRisk,
+slAtrMult = input.float(1.8, "SL ATR Multiplikator", minval=0.3, maxval=10.0, step=0.1, group=grpRisk,
      tooltip="Nur bei Methode 'ATR': SL = Entry ± (Mult × ATR).")
 swingBars = input.int(10,    "Swing Lookback (Bars)", minval=3, maxval=100,              group=grpRisk,
      tooltip="Nur bei Methode 'Swing': Bars für ta.lowest/ta.highest. ATR-Puffer wird addiert.")
-rrRatio   = input.float(2.0, "Risk-Reward-Ratio",    minval=0.5, maxval=20.0, step=0.1, group=grpRisk,
+rrRatio   = input.float(1.8, "Risk-Reward-Ratio",    minval=0.5, maxval=20.0, step=0.1, group=grpRisk,
      tooltip="TP = Entry + RRR × SL-Abstand. Default 2.0 = 1:2 R/R.")
 riskPct   = input.float(1.0, "Risiko pro Trade (%)", minval=0.1, maxval=10.0, step=0.1, group=grpRisk,
      tooltip="% des aktuellen Eigenkapitals, das pro Trade maximal riskiert wird.")
