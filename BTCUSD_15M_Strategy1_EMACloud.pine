@@ -1,0 +1,195 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════
+// BTCUSD 15M — Strategie 1: EMA Cloud Trend Pullback + HTF Filter
+// ═══════════════════════════════════════════════════════════════════
+//
+// KONZEPT:
+//   EMA 21/50 Cloud definiert Trend auf 15M.
+//   4-Stunden EMA50 filtert Macro-Trend (HTF).
+//   Entry: Pullback zur EMA21 im Trend + Bar-Qualität + RSI.
+//   Exit: 2.5×ATR SL + 1:3.5 TP + Break-Even Stop bei +1R.
+//
+// BTC-ANPASSUNGEN gegenüber XAUUSD:
+//   - HTF: 4H statt 60min (BTC-Trends besser auf 4H sichtbar)
+//   - Session: 24/7 (kein Session-Filter nötig)
+//   - SL: 2.5×ATR (BTC-Volatilität höher, mehr Spielraum nötig)
+//   - EMA-Trennung: 0.20×ATR (etwas toleranter für BTC-Ranging)
+//
+// HINWEIS: Entwickelt für BTCUSD 15M. Getestet mit BTC-Volatilitätsprofil.
+//   Spread/Slippage berücksichtigen (je Broker unterschiedlich).
+// ═══════════════════════════════════════════════════════════════════
+strategy("BTCUSD 15M EMA Cloud Pullback [4H HTF]",
+         shorttitle="BTC·S1·EMACloud",
+         overlay=true, pyramiding=0,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=1,
+         initial_capital=10000,
+         currency=currency.USD,
+         process_orders_on_close=false,
+         max_lines_count=500)
+
+// ──────────────────────────────────────────────
+// INPUTS
+// ──────────────────────────────────────────────
+grpTrend    = "Trend (15M EMA Cloud)"
+emaFastLen  = input.int(21,    "EMA Schnell",            group=grpTrend)
+emaSlowLen  = input.int(50,    "EMA Langsam",            group=grpTrend)
+emaSepFact  = input.float(0.20,"EMA Trennung × ATR",    step=0.05, group=grpTrend,
+                  tooltip="EMA21-EMA50 ≥ X×ATR. Etwas niedriger als Gold da BTC häufiger rangt.")
+pbLB        = input.int(3,     "Pullback Lookback",      group=grpTrend)
+
+grpHTF      = "HTF Filter (4 Stunden)"
+htfTF       = input.timeframe("240","HTF Timeframe",     group=grpHTF,
+                  tooltip="4H EMA50 ist der wichtigste Filter. Verhindert Trades gegen BTC Macro-Trend.")
+htfEMALen   = input.int(50,    "HTF EMA Länge",          group=grpHTF)
+
+grpEntry    = "Einstieg"
+bqrMin      = input.float(0.35,"Bar Quality Ratio",     step=0.05, group=grpEntry,
+                  tooltip="(Close-Low)/(High-Low) ≥ Wert für bullische Entry-Kerze.")
+rsiLen      = input.int(14,    "RSI Länge",              group=grpEntry)
+rsiLongMin  = input.int(55,    "RSI Long Min",           group=grpEntry)
+rsiShortMax = input.int(45,    "RSI Short Max",          group=grpEntry)
+
+grpRisk     = "Risiko Management"
+slAtrMult   = input.float(2.5, "SL × ATR",              step=0.5, group=grpRisk,
+                  tooltip="BTC-typisch: ATR oft $300-600 auf 15M. 2.5× = $750-1500 SL.")
+rrRatio     = input.float(3.5, "Reward:Risk",            step=0.5, group=grpRisk)
+riskPct     = input.float(1.0, "Risiko pro Trade (%)",  step=0.1, group=grpRisk)
+useBE       = input.bool(true,  "Break-Even Stop",       group=grpRisk)
+beR         = input.float(1.0, "BE Aktivierung (×R)",   step=0.1, group=grpRisk)
+
+// ──────────────────────────────────────────────
+// INDIKATOREN
+// ──────────────────────────────────────────────
+ef   = ta.ema(close, emaFastLen)
+es   = ta.ema(close, emaSlowLen)
+atr  = ta.atr(14)
+rsi  = ta.rsi(close, rsiLen)
+
+htfC = request.security(syminfo.tickerid, htfTF, close,
+         barmerge.gaps_off, barmerge.lookahead_off)
+htfE = request.security(syminfo.tickerid, htfTF, ta.ema(close, htfEMALen),
+         barmerge.gaps_off, barmerge.lookahead_off)
+htfBull = htfC > htfE
+htfBear = htfC < htfE
+
+// ──────────────────────────────────────────────
+// SIGNALBEDINGUNGEN
+// ──────────────────────────────────────────────
+bull15 = ef > es
+bear15 = ef < es
+
+sepL = (ef - es) >  emaSepFact * atr
+sepS = (es - ef) >  emaSepFact * atr
+
+pbLow  = ta.lowest(close[1],  pbLB)
+pbHigh = ta.highest(close[1], pbLB)
+pbl = pbLow  <= ef[1] and close > ef
+pbs = pbHigh >= ef[1] and close < ef
+
+pbzl = ta.lowest(close[1],  pbLB) >= es[1] - 0.3 * atr[1]
+pbzs = ta.highest(close[1], pbLB) <= es[1] + 0.3 * atr[1]
+
+efUp   = ef > ef[2]
+efDown = ef < ef[2]
+
+barRng = high - low
+bqL = barRng > 0 ? (close - low)  / barRng >= bqrMin : false
+bqS = barRng > 0 ? (high - close) / barRng >= bqrMin : false
+
+rsiL = rsi >= rsiLongMin  and rsi < 80
+rsiS = rsi <= rsiShortMax and rsi > 20
+
+longSignal  = bull15 and efUp   and htfBull and pbl and pbzl and sepL and bqL and rsiL
+shortSignal = bear15 and efDown and htfBear and pbs and pbzs and sepS and bqS and rsiS
+
+// ──────────────────────────────────────────────
+// SL / TP / POSITIONSGRÖSSE
+// ──────────────────────────────────────────────
+slDistL = slAtrMult * atr
+slDistS = slAtrMult * atr
+
+slPriceL = close - slDistL
+tpPriceL = close + rrRatio * slDistL
+slPriceS = close + slDistS
+tpPriceS = close - rrRatio * slDistS
+
+riskAmt = strategy.equity * riskPct / 100.0
+qtyL = slDistL > 0 ? riskAmt / slDistL : na
+qtyS = slDistS > 0 ? riskAmt / slDistS : na
+
+// ──────────────────────────────────────────────
+// TRADE STATE
+// ──────────────────────────────────────────────
+var float activeSL   = na
+var float activeTP   = na
+var float initSlDist = na
+var bool  beDone     = false
+
+// ──────────────────────────────────────────────
+// ENTRY
+// ──────────────────────────────────────────────
+if longSignal and strategy.position_size == 0
+    activeSL   := slPriceL
+    activeTP   := tpPriceL
+    initSlDist := slDistL
+    beDone     := false
+    strategy.entry("Long",  strategy.long,  qty=qtyL,  comment="EMA PB ▲")
+    strategy.exit ("Long Exit", from_entry="Long", stop=activeSL, limit=activeTP)
+    line.new(bar_index, tpPriceL, bar_index + 6, tpPriceL, color=color.new(color.lime, 0), width=2)
+    line.new(bar_index, slPriceL, bar_index + 6, slPriceL, color=color.new(color.red,  0), width=2)
+
+if shortSignal and strategy.position_size == 0
+    activeSL   := slPriceS
+    activeTP   := tpPriceS
+    initSlDist := slDistS
+    beDone     := false
+    strategy.entry("Short", strategy.short, qty=qtyS,  comment="EMA PB ▼")
+    strategy.exit ("Short Exit", from_entry="Short", stop=activeSL, limit=activeTP)
+    line.new(bar_index, tpPriceS, bar_index + 6, tpPriceS, color=color.new(color.lime, 0), width=2)
+    line.new(bar_index, slPriceS, bar_index + 6, slPriceS, color=color.new(color.red,  0), width=2)
+
+// ──────────────────────────────────────────────
+// BREAK-EVEN (jeden Bar aktualisiert)
+// ──────────────────────────────────────────────
+if strategy.position_size > 0 and not na(initSlDist)
+    ep = strategy.position_avg_price
+    if useBE and not beDone
+        if high - ep >= beR * initSlDist
+            activeSL := math.max(activeSL, ep)
+            beDone   := true
+    strategy.exit("Long Exit", from_entry="Long", stop=activeSL, limit=activeTP)
+
+if strategy.position_size < 0 and not na(initSlDist)
+    ep = strategy.position_avg_price
+    if useBE and not beDone
+        if ep - low >= beR * initSlDist
+            activeSL := math.min(activeSL, ep)
+            beDone   := true
+    strategy.exit("Short Exit", from_entry="Short", stop=activeSL, limit=activeTP)
+
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    activeSL   := na
+    activeTP   := na
+    initSlDist := na
+    beDone     := false
+
+// ──────────────────────────────────────────────
+// DARSTELLUNG
+// ──────────────────────────────────────────────
+p_ef = plot(ef, "EMA 21", color=color.new(color.blue,   30), linewidth=1)
+p_es = plot(es, "EMA 50", color=color.new(color.orange, 30), linewidth=2)
+fill(p_ef, p_es, color=bull15 ? color.new(color.green, 85) : color.new(color.red, 85))
+
+plot(strategy.position_size != 0 ? activeSL : na, "Stop-Loss",
+     color=color.new(color.red,  0), style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size != 0 ? activeTP : na, "Take-Profit",
+     color=color.new(color.lime, 0), style=plot.style_linebr, linewidth=2)
+
+plotshape(longSignal  and strategy.position_size == 0, "Long",
+          style=shape.triangleup,   location=location.belowbar, color=color.lime, size=size.small)
+plotshape(shortSignal and strategy.position_size == 0, "Short",
+          style=shape.triangledown, location=location.abovebar, color=color.red,  size=size.small)
+
+bgcolor(htfBull ? color.new(color.green, 97) :
+        htfBear ? color.new(color.red,   97) : na, title="4H HTF Trend")

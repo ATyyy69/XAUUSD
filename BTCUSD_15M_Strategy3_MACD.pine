@@ -1,0 +1,224 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════
+// BTCUSD 15M — Strategie 3: MACD Momentum + EMA200 Trend + HTF
+// ═══════════════════════════════════════════════════════════════════
+//
+// KONZEPT:
+//   MACD (12,26,9) identifiziert Momentum-Wechsel.
+//   EMA200 definiert den übergeordneten Trend auf 15M.
+//   HTF 4H EMA50 filtert zusätzlich gegen den Macro-Trend.
+//   Entry: MACD-Kreuz in Trendrichtung + MACD über/unter 0-Linie + RSI.
+//
+// LOGIK:
+//   Long:  MACD kreuzt Signal-Linie von unten UND MACD > 0 (Bullen-Territory)
+//          UND Preis über EMA200 UND 4H bullisch UND RSI 45-75
+//   Short: MACD kreuzt Signal-Linie von oben UND MACD < 0 (Bären-Territory)
+//          UND Preis unter EMA200 UND 4H bärisch UND RSI 25-55
+//
+// BTC-SPEZIFISCH:
+//   MACD ist bei BTC effektiver da BTC starke Momentum-Zyklen hat.
+//   Der MACD > 0 Filter stellt sicher: nur STARKE Momentum-Signale,
+//   nicht Rebounds in einem schwachen Trend.
+//   EMA200 als "Trennlinie" zwischen Bull- und Bären-Markt (klassisch).
+//
+// PARAMETER-EMPFEHLUNG:
+//   macd_fast=12 | macd_slow=26 | macd_sig=9 | sl=2.0 | rr=3.0
+// ═══════════════════════════════════════════════════════════════════
+strategy("BTCUSD 15M MACD Momentum [EMA200 + 4H HTF]",
+         shorttitle="BTC·S3·MACD",
+         overlay=true, pyramiding=0,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=1,
+         initial_capital=10000,
+         currency=currency.USD,
+         process_orders_on_close=false,
+         max_lines_count=500)
+
+// ──────────────────────────────────────────────
+// INPUTS
+// ──────────────────────────────────────────────
+grpMACD     = "MACD"
+macdFast    = input.int(12,    "MACD Fast",               group=grpMACD)
+macdSlow    = input.int(26,    "MACD Slow",               group=grpMACD)
+macdSig     = input.int(9,     "MACD Signal",             group=grpMACD)
+requireAbove0 = input.bool(true, "MACD muss > 0 für Long / < 0 für Short", group=grpMACD,
+                  tooltip="Erzwingt dass MACD-Linie über/unter Null-Linie liegt. Verhindert Rebounds in schwachen Trends.")
+
+grpTrend    = "Trend-Filter"
+ema200Len   = input.int(200,   "EMA Trend",               group=grpTrend,
+                  tooltip="EMA200 als Trennlinie Bull/Bären-Markt. Long nur über EMA200.")
+ema200Sep   = input.float(0.0, "EMA200 Trennung × ATR",  step=0.05, group=grpTrend,
+                  tooltip="0 = nur Richtung. > 0 = Preis muss X×ATR über EMA200 sein.")
+
+grpHTF      = "HTF Filter (4 Stunden)"
+htfTF       = input.timeframe("240","HTF Timeframe",      group=grpHTF)
+htfEMALen   = input.int(50,    "HTF EMA Länge",           group=grpHTF)
+
+grpEntry    = "Einstieg"
+bqrMin      = input.float(0.30,"Bar Quality Ratio",   step=0.05, group=grpEntry)
+rsiLen      = input.int(14,    "RSI Länge",               group=grpEntry)
+rsiLongMin  = input.int(45,    "RSI Long Min",            group=grpEntry,
+                  tooltip="RSI ≥ 45 bestätigt bullisches Momentum ohne Überkauf-Risiko.")
+rsiShortMax = input.int(55,    "RSI Short Max",           group=grpEntry)
+rsiOBLimit  = input.int(75,    "RSI Überkauft (blockiert Long)",  group=grpEntry)
+rsiOSLimit  = input.int(25,    "RSI Überverkauft (blockiert Short)", group=grpEntry)
+
+grpRisk     = "Risiko Management"
+slAtrMult   = input.float(2.0, "SL × ATR",           step=0.5, group=grpRisk)
+rrRatio     = input.float(3.0, "Reward:Risk",         step=0.5, group=grpRisk)
+riskPct     = input.float(1.0, "Risiko pro Trade (%)",step=0.1, group=grpRisk)
+useBE       = input.bool(true,  "Break-Even Stop",        group=grpRisk)
+beR         = input.float(1.0, "BE Aktivierung (×R)", step=0.1, group=grpRisk)
+
+// ──────────────────────────────────────────────
+// INDIKATOREN
+// ──────────────────────────────────────────────
+atr  = ta.atr(14)
+rsi  = ta.rsi(close, rsiLen)
+ema200 = ta.ema(close, ema200Len)
+
+// MACD
+[macdLine, signalLine, histLine] = ta.macd(close, macdFast, macdSlow, macdSig)
+
+// MACD Kreuz (auf bestätigten Bars: [1] = letzter abgeschlossener Bar)
+macdCrossUp   = ta.crossover( macdLine[1], signalLine[1])
+macdCrossDown = ta.crossunder(macdLine[1], signalLine[1])
+
+// HTF-Filter
+htfC = request.security(syminfo.tickerid, htfTF, close,
+         barmerge.gaps_off, barmerge.lookahead_off)
+htfE = request.security(syminfo.tickerid, htfTF, ta.ema(close, htfEMALen),
+         barmerge.gaps_off, barmerge.lookahead_off)
+htfBull = htfC > htfE
+htfBear = htfC < htfE
+
+// ──────────────────────────────────────────────
+// SIGNALBEDINGUNGEN
+// ──────────────────────────────────────────────
+// EMA200 Trend (Long über EMA200, Short darunter)
+aboveEMA200 = close > ema200 * (1 + ema200Sep / 100)
+belowEMA200 = close < ema200 * (1 - ema200Sep / 100)
+
+// MACD-Filter: über/unter Null-Linie
+macdAbove0 = requireAbove0 ? macdLine > 0 : true
+macdBelow0 = requireAbove0 ? macdLine < 0 : true
+
+// MACD Histogramm: aktuell positiv und steigend (Momentum aufbauend)
+histBull = histLine > 0 and histLine > histLine[1]
+histBear = histLine < 0 and histLine < histLine[1]
+
+// Bar-Qualität
+barRng = high - low
+bqL = barRng > 0 ? (close - low)  / barRng >= bqrMin : false
+bqS = barRng > 0 ? (high - close) / barRng >= bqrMin : false
+
+// RSI
+rsiL = rsi >= rsiLongMin  and rsi < rsiOBLimit
+rsiS = rsi <= rsiShortMax and rsi > rsiOSLimit
+
+// Signale
+// Long:  MACD Kreuz ↑ + MACD > 0 + Preis über EMA200 + 4H bullisch + Hist steigend + RSI
+longSignal  = macdCrossUp   and macdAbove0 and aboveEMA200 and htfBull and histBull and bqL and rsiL
+// Short: MACD Kreuz ↓ + MACD < 0 + Preis unter EMA200 + 4H bärisch + Hist fallend + RSI
+shortSignal = macdCrossDown and macdBelow0 and belowEMA200 and htfBear and histBear and bqS and rsiS
+
+// ──────────────────────────────────────────────
+// SL / TP / POSITIONSGRÖSSE
+// ──────────────────────────────────────────────
+slDistL = slAtrMult * atr
+slDistS = slAtrMult * atr
+
+slPriceL = close - slDistL
+tpPriceL = close + rrRatio * slDistL
+slPriceS = close + slDistS
+tpPriceS = close - rrRatio * slDistS
+
+riskAmt = strategy.equity * riskPct / 100.0
+qtyL = slDistL > 0 ? riskAmt / slDistL : na
+qtyS = slDistS > 0 ? riskAmt / slDistS : na
+
+// ──────────────────────────────────────────────
+// TRADE STATE
+// ──────────────────────────────────────────────
+var float activeSL   = na
+var float activeTP   = na
+var float initSlDist = na
+var bool  beDone     = false
+
+// ──────────────────────────────────────────────
+// ENTRY
+// ──────────────────────────────────────────────
+if longSignal and strategy.position_size == 0
+    activeSL   := slPriceL
+    activeTP   := tpPriceL
+    initSlDist := slDistL
+    beDone     := false
+    strategy.entry("Long",  strategy.long,  qty=qtyL,  comment="MACD ▲")
+    strategy.exit ("Long Exit", from_entry="Long", stop=activeSL, limit=activeTP)
+    line.new(bar_index, tpPriceL, bar_index + 6, tpPriceL, color=color.new(color.lime, 0), width=2)
+    line.new(bar_index, slPriceL, bar_index + 6, slPriceL, color=color.new(color.red,  0), width=2)
+
+if shortSignal and strategy.position_size == 0
+    activeSL   := slPriceS
+    activeTP   := tpPriceS
+    initSlDist := slDistS
+    beDone     := false
+    strategy.entry("Short", strategy.short, qty=qtyS,  comment="MACD ▼")
+    strategy.exit ("Short Exit", from_entry="Short", stop=activeSL, limit=activeTP)
+    line.new(bar_index, tpPriceS, bar_index + 6, tpPriceS, color=color.new(color.lime, 0), width=2)
+    line.new(bar_index, slPriceS, bar_index + 6, slPriceS, color=color.new(color.red,  0), width=2)
+
+// ──────────────────────────────────────────────
+// BREAK-EVEN (jeden Bar aktualisiert)
+// ──────────────────────────────────────────────
+if strategy.position_size > 0 and not na(initSlDist)
+    ep = strategy.position_avg_price
+    if useBE and not beDone
+        if high - ep >= beR * initSlDist
+            activeSL := math.max(activeSL, ep)
+            beDone   := true
+    strategy.exit("Long Exit", from_entry="Long", stop=activeSL, limit=activeTP)
+
+if strategy.position_size < 0 and not na(initSlDist)
+    ep = strategy.position_avg_price
+    if useBE and not beDone
+        if ep - low >= beR * initSlDist
+            activeSL := math.min(activeSL, ep)
+            beDone   := true
+    strategy.exit("Short Exit", from_entry="Short", stop=activeSL, limit=activeTP)
+
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    activeSL   := na
+    activeTP   := na
+    initSlDist := na
+    beDone     := false
+
+// ──────────────────────────────────────────────
+// DARSTELLUNG
+// ──────────────────────────────────────────────
+// EMA200 (Haupt-Trendlinie)
+plot(ema200, "EMA 200", color=color.new(color.white, 20), linewidth=2)
+
+// MACD Panel (im Subframe sichtbar wenn hinzugefügt)
+// (Overlay=true, MACD wird nicht direkt auf Preis geplottet)
+// Stattdessen: MACD-Status-Indikator oben/unten
+plotchar(macdLine > 0 and macdLine > signalLine, "MACD Bull", "▲",
+         location=location.top, color=color.new(color.green, 50), size=size.tiny)
+plotchar(macdLine < 0 and macdLine < signalLine, "MACD Bear", "▼",
+         location=location.bottom, color=color.new(color.red, 50), size=size.tiny)
+
+// Laufende SL/TP Linien
+plot(strategy.position_size != 0 ? activeSL : na, "Stop-Loss",
+     color=color.new(color.red,  0), style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size != 0 ? activeTP : na, "Take-Profit",
+     color=color.new(color.lime, 0), style=plot.style_linebr, linewidth=2)
+
+// Signalpfeile
+plotshape(longSignal  and strategy.position_size == 0, "Long",
+          style=shape.triangleup,   location=location.belowbar, color=color.lime, size=size.small)
+plotshape(shortSignal and strategy.position_size == 0, "Short",
+          style=shape.triangledown, location=location.abovebar, color=color.red,  size=size.small)
+
+// EMA200 Zone Hintergrund
+bgcolor(close > ema200 ? color.new(color.green, 97) :
+        close < ema200 ? color.new(color.red,   97) : na, title="EMA200 Zone")

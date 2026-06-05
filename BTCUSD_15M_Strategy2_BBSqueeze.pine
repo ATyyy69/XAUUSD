@@ -1,0 +1,221 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════
+// BTCUSD 15M — Strategie 2: Bollinger Band Squeeze Breakout + HTF
+// ═══════════════════════════════════════════════════════════════════
+//
+// KONZEPT:
+//   Bollinger Band Squeeze (enge Bänder = Konsolidierung) wird erkannt.
+//   Wenn die Bänder sich danach wieder ausweiten und der Preis ausbricht,
+//   folgt oft eine starke direktionale Bewegung.
+//   HTF 4H EMA50 gibt die Richtung vor.
+//
+// LOGIK:
+//   1. Squeeze: BB-Breite < Schwellenwert (z.B. < 2% des Preises)
+//   2. Ausbruch: Close überschreitet BB-Oberband (Long) oder -Unterband (Short)
+//      NACHDEM ein Squeeze vorhanden war
+//   3. ATR-Expansion: Bestätigt Ausbruchs-Momentum
+//   4. HTF 4H EMA50 Filter: nur Ausbrüche in Macro-Trendrichtung
+//   5. Bar Quality: Ausbruchs-Kerze muss Überzeugung zeigen
+//
+// BTC-SPEZIFISCH:
+//   Bollinger Band Squeezes sind bei BTC häufiger und stärker als bei Gold.
+//   Die Strategy profitiert von explosiven BTC-Bewegungen nach Konsolidierung.
+//   Kein Session-Filter: BTC bewegt sich 24/7, Squeezes entstehen jederzeit.
+//
+// PARAMETER-EMPFEHLUNG:
+//   bb_len=20 | bb_mult=2.0 | squeeze_thresh=2.5 | sl=2.0 | rr=3.0
+// ═══════════════════════════════════════════════════════════════════
+strategy("BTCUSD 15M BB Squeeze Breakout [4H HTF]",
+         shorttitle="BTC·S2·BBSqueeze",
+         overlay=true, pyramiding=0,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=1,
+         initial_capital=10000,
+         currency=currency.USD,
+         process_orders_on_close=false,
+         max_lines_count=500)
+
+// ──────────────────────────────────────────────
+// INPUTS
+// ──────────────────────────────────────────────
+grpBB       = "Bollinger Bands"
+bbLen       = input.int(20,    "BB Perioden",             group=grpBB)
+bbMult      = input.float(2.0, "BB Multiplikator",   step=0.5, group=grpBB)
+sqzThresh   = input.float(2.5, "Squeeze Schwelle (%)",step=0.5, group=grpBB,
+                  tooltip="BB-Breite < X% des Mittelwerts = Squeeze erkannt. Typisch 2-3% für BTC 15M.")
+sqzLookback = input.int(5,     "Min. Squeeze-Dauer (Bars)", group=grpBB,
+                  tooltip="Squeeze muss mindestens X Bars anhalten bevor Ausbruch gültig ist.")
+
+grpHTF      = "HTF Filter (4 Stunden)"
+htfTF       = input.timeframe("240","HTF Timeframe",      group=grpHTF)
+htfEMALen   = input.int(50,    "HTF EMA Länge",           group=grpHTF)
+
+grpEntry    = "Einstieg"
+atrExpMult  = input.float(1.1, "ATR-Expansion × Ø-ATR",step=0.1, group=grpEntry,
+                  tooltip="ATR muss > X × Ø-ATR sein: Bestätigt Ausbruchs-Momentum.")
+bqrMin      = input.float(0.30,"Bar Quality Ratio",   step=0.05, group=grpEntry)
+rsiLen      = input.int(14,    "RSI Länge",               group=grpEntry)
+rsiLongMin  = input.int(50,    "RSI Long Min",            group=grpEntry)
+rsiShortMax = input.int(50,    "RSI Short Max",           group=grpEntry)
+
+grpRisk     = "Risiko Management"
+slAtrMult   = input.float(2.0, "SL × ATR",           step=0.5, group=grpRisk,
+                  tooltip="SL hinter die BB-Mitte (SMA). 2.0×ATR als Sicherheitspuffer.")
+rrRatio     = input.float(3.0, "Reward:Risk",         step=0.5, group=grpRisk)
+riskPct     = input.float(1.0, "Risiko pro Trade (%)",step=0.1, group=grpRisk)
+useBE       = input.bool(true,  "Break-Even Stop",        group=grpRisk)
+beR         = input.float(1.0, "BE Aktivierung (×R)", step=0.1, group=grpRisk)
+
+// ──────────────────────────────────────────────
+// INDIKATOREN
+// ──────────────────────────────────────────────
+atr    = ta.atr(14)
+atrAvg = ta.sma(atr, bbLen)
+rsi    = ta.rsi(close, rsiLen)
+
+// Bollinger Bands
+bbBasis = ta.sma(close, bbLen)
+bbStdev = ta.stdev(close, bbLen)
+bbUpper = bbBasis + bbMult * bbStdev
+bbLower = bbBasis - bbMult * bbStdev
+
+// BB-Breite als % des Mittelwerts (normalisiert für Preisunabhängigkeit)
+bbWidth = bbBasis > 0 ? (bbUpper - bbLower) / bbBasis * 100 : na
+
+// Squeeze: BB-Breite unter Schwellenwert
+squeeze = bbWidth < sqzThresh
+
+// Squeeze für N Bars aktiv (Mindest-Squeeze-Dauer)
+squeezeCount = ta.barssince(not squeeze)
+sqzEstablished = squeezeCount >= sqzLookback
+
+// ATR-Expansion
+atrExpand = atr >= atrAvg * atrExpMult
+
+// HTF-Filter
+htfC = request.security(syminfo.tickerid, htfTF, close,
+         barmerge.gaps_off, barmerge.lookahead_off)
+htfE = request.security(syminfo.tickerid, htfTF, ta.ema(close, htfEMALen),
+         barmerge.gaps_off, barmerge.lookahead_off)
+htfBull = htfC > htfE
+htfBear = htfC < htfE
+
+// ──────────────────────────────────────────────
+// SIGNALBEDINGUNGEN
+// ──────────────────────────────────────────────
+// Ausbruch nach Squeeze: Close bricht BB-Band erstmals
+// sqzEstablished[1]: Squeeze war VOR dem Ausbruch etabliert
+brkUp = sqzEstablished[1] and close > bbUpper and close[1] <= bbUpper[1]
+brkDn = sqzEstablished[1] and close < bbLower and close[1] >= bbLower[1]
+
+barRng = high - low
+bqL = barRng > 0 ? (close - low)  / barRng >= bqrMin and close > open : false
+bqS = barRng > 0 ? (high - close) / barRng >= bqrMin and close < open : false
+
+rsiL = rsi >= rsiLongMin  and rsi <= 85
+rsiS = rsi <= rsiShortMax and rsi >= 15
+
+longSignal  = htfBull and brkUp and atrExpand and bqL and rsiL
+shortSignal = htfBear and brkDn and atrExpand and bqS and rsiS
+
+// ──────────────────────────────────────────────
+// SL / TP / POSITIONSGRÖSSE
+// ──────────────────────────────────────────────
+slDistL = slAtrMult * atr
+slDistS = slAtrMult * atr
+
+slPriceL = close - slDistL
+tpPriceL = close + rrRatio * slDistL
+slPriceS = close + slDistS
+tpPriceS = close - rrRatio * slDistS
+
+riskAmt = strategy.equity * riskPct / 100.0
+qtyL = slDistL > 0 ? riskAmt / slDistL : na
+qtyS = slDistS > 0 ? riskAmt / slDistS : na
+
+// ──────────────────────────────────────────────
+// TRADE STATE
+// ──────────────────────────────────────────────
+var float activeSL   = na
+var float activeTP   = na
+var float initSlDist = na
+var bool  beDone     = false
+
+// ──────────────────────────────────────────────
+// ENTRY
+// ──────────────────────────────────────────────
+if longSignal and strategy.position_size == 0
+    activeSL   := slPriceL
+    activeTP   := tpPriceL
+    initSlDist := slDistL
+    beDone     := false
+    strategy.entry("Long",  strategy.long,  qty=qtyL,  comment="BB SQZ ▲")
+    strategy.exit ("Long Exit", from_entry="Long", stop=activeSL, limit=activeTP)
+    line.new(bar_index, tpPriceL, bar_index + 6, tpPriceL, color=color.new(color.lime, 0), width=2)
+    line.new(bar_index, slPriceL, bar_index + 6, slPriceL, color=color.new(color.red,  0), width=2)
+
+if shortSignal and strategy.position_size == 0
+    activeSL   := slPriceS
+    activeTP   := tpPriceS
+    initSlDist := slDistS
+    beDone     := false
+    strategy.entry("Short", strategy.short, qty=qtyS,  comment="BB SQZ ▼")
+    strategy.exit ("Short Exit", from_entry="Short", stop=activeSL, limit=activeTP)
+    line.new(bar_index, tpPriceS, bar_index + 6, tpPriceS, color=color.new(color.lime, 0), width=2)
+    line.new(bar_index, slPriceS, bar_index + 6, slPriceS, color=color.new(color.red,  0), width=2)
+
+// ──────────────────────────────────────────────
+// BREAK-EVEN (jeden Bar aktualisiert)
+// ──────────────────────────────────────────────
+if strategy.position_size > 0 and not na(initSlDist)
+    ep = strategy.position_avg_price
+    if useBE and not beDone
+        if high - ep >= beR * initSlDist
+            activeSL := math.max(activeSL, ep)
+            beDone   := true
+    strategy.exit("Long Exit", from_entry="Long", stop=activeSL, limit=activeTP)
+
+if strategy.position_size < 0 and not na(initSlDist)
+    ep = strategy.position_avg_price
+    if useBE and not beDone
+        if ep - low >= beR * initSlDist
+            activeSL := math.min(activeSL, ep)
+            beDone   := true
+    strategy.exit("Short Exit", from_entry="Short", stop=activeSL, limit=activeTP)
+
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    activeSL   := na
+    activeTP   := na
+    initSlDist := na
+    beDone     := false
+
+// ──────────────────────────────────────────────
+// DARSTELLUNG
+// ──────────────────────────────────────────────
+// Bollinger Bands
+p_bbu = plot(bbUpper, "BB Oben",  color=color.new(color.blue,   50), linewidth=1)
+p_bbl = plot(bbLower, "BB Unten", color=color.new(color.blue,   50), linewidth=1)
+p_bbm = plot(bbBasis, "BB Mitte", color=color.new(color.gray,   60), linewidth=1, style=plot.style_circles)
+fill(p_bbu, p_bbl,
+     color=squeeze ? color.new(color.yellow, 90) : color.new(color.blue, 95),
+     title="BB Füllung (gelb = Squeeze)")
+
+// Laufende SL/TP Linien
+plot(strategy.position_size != 0 ? activeSL : na, "Stop-Loss",
+     color=color.new(color.red,  0), style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size != 0 ? activeTP : na, "Take-Profit",
+     color=color.new(color.lime, 0), style=plot.style_linebr, linewidth=2)
+
+// Signalpfeile
+plotshape(longSignal  and strategy.position_size == 0, "Long",
+          style=shape.triangleup,   location=location.belowbar, color=color.lime, size=size.small)
+plotshape(shortSignal and strategy.position_size == 0, "Short",
+          style=shape.triangledown, location=location.abovebar, color=color.red,  size=size.small)
+
+// Squeeze-Indikator am Rand
+plotchar(squeeze and not squeeze[1], "Squeeze Start", "●",
+         location=location.top, color=color.new(color.orange, 0), size=size.tiny)
+
+// 4H HTF Hintergrundfarbe
+bgcolor(htfBull ? color.new(color.green, 97) :
+        htfBear ? color.new(color.red,   97) : na, title="4H HTF Trend")
