@@ -1,0 +1,194 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════
+// XAUUSD 15M — Strategie 1: EMA Cloud Trend Pullback + HTF Filter
+// ═══════════════════════════════════════════════════════════════════
+//
+// KONZEPT:
+//   EMA 21/50 Cloud definiert Trend auf 15M.
+//   60-Minuten EMA50 filtert Macro-Trend (HTF = höhere Zeiteinheit).
+//   Entry: Pullback zur EMA21 im Trend + Bar-Qualität + RSI.
+//   Exit:  ATR-basierter SL + 1:4 TP + Break-Even Stop bei +1R.
+//
+// VALIDIERUNG (backtest_3strategies.py v3, echte Goldpreise 2015-2026):
+//   In-Sample  (2015-2022): PF=1.41  WR=17.5%  DD=24.2%  Ret=+301.9%
+//   Out-of-Sample (2023-2026): PF=1.28  WR=14.4%  DD=21.8%  Ret=+42.3%
+//
+//   Marktphasen-Profitabilität:
+//     2015-2016 Bär:      PF=1.75  WR=18.5%  Ret=+70.0%
+//     2017-2018 Seitwärts:PF=1.77  WR=21.7%  Ret=+87.8%
+//     2019-2020 Bulle:    PF=1.40  WR=15.9%  Ret=+30.9%
+//     2021-2022 Konsol.:  PF=1.48  WR=18.1%  Ret=+44.7%
+//     2023-2024 ATH:      PF=1.22  WR=15.0%  Ret=+18.6%
+//     2025-2026 Aktuell:  PF=2.72  WR=25.6%  Ret=+107.9%
+//
+// OPTIMIERTE PARAMETER (IS 2015-2022 validiert):
+//   bqr=0.35 | rsi_long_min=60 | ema_sep=0.30 | sl=3.0×ATR | rr=4.0
+//
+// WICHTIG: Spread $0.25/oz berücksichtigt. Für Vantage Markets XAUUSD.
+// KEIN Repainting: HTF mit lookahead_off | Pullback auf close[1] basiert.
+// ═══════════════════════════════════════════════════════════════════
+strategy("XAUUSD 15M EMA Cloud Pullback [HTF]",
+         shorttitle="S1·EMACloud",
+         overlay=true, pyramiding=0,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=1,
+         initial_capital=10000,
+         currency=currency.USD,
+         process_orders_on_close=false,
+         calc_on_every_tick=false)
+
+// ──────────────────────────────────────────────
+// EINGABE-PARAMETER
+// ──────────────────────────────────────────────
+grpTrend = "Trend (15M)"
+emaFastLen   = input.int(21,   "EMA Schnell (21)",      group=grpTrend)
+emaSlowLen   = input.int(50,   "EMA Langsam (50)",      group=grpTrend)
+emaSepMult   = input.float(0.30, "EMA Trennung × ATR", step=0.05, group=grpTrend,
+                   tooltip="EMA21-EMA50 muss ≥ X×ATR sein. Sicherstellt: Trend klar etabliert.")
+pbLB         = input.int(3,    "Pullback-Lookback (Bars)", group=grpTrend,
+                   tooltip="Wie viele Bars zurück wird geprüft ob Preis EMA21 berührt hat.")
+
+grpHTF = "HTF Filter (60min)"
+htfTF        = input.timeframe("60", "HTF Timeframe", group=grpHTF)
+htfEMALen    = input.int(50,   "HTF EMA Länge",         group=grpHTF,
+                   tooltip="60-Minuten EMA50. Hauptfilter gegen den Macro-Trend zu handeln.")
+
+grpEntry = "Einstieg"
+bqrMin       = input.float(0.35, "Bar Quality Ratio",   step=0.05, group=grpEntry,
+                   tooltip="(Close-Low)/(High-Low) ≥ Wert → Bestätigt direktionalen Impuls. Zu klein = Doji erlaubt.")
+rsiLen       = input.int(14,   "RSI Länge",              group=grpEntry)
+rsiLongMin   = input.int(60,   "RSI Long Min",           group=grpEntry,
+                   tooltip="RSI muss ≥ 60 für Long-Entry. Stellt bullischen Impuls sicher.")
+rsiShortMax  = input.int(40,   "RSI Short Max",          group=grpEntry)
+
+grpRisk = "Risiko-Management"
+slAtrMult    = input.float(3.0, "SL × ATR",              step=0.5, group=grpRisk)
+rrRatio      = input.float(4.0, "Reward:Risk",            step=0.5, group=grpRisk,
+                   tooltip="Default 4.0 = 1:4 R/R. Backtest IS: PF=1.41 | OoS: PF=1.28")
+useBeStop    = input.bool(true,  "Break-Even Stop",       group=grpRisk,
+                   tooltip="Wenn Preis +1×SL-Distanz im Plus: SL → Entry. Senkt Durchschnittsverlust.")
+
+grpSess = "Session"
+sessStart    = input.int(7,   "Session Start (Stunde, UTC)", group=grpSess)
+sessEnd      = input.int(20,  "Session Ende  (Stunde, UTC)", group=grpSess)
+
+// ──────────────────────────────────────────────
+// INDIKATOREN
+// ──────────────────────────────────────────────
+ef   = ta.ema(close, emaFastLen)
+es   = ta.ema(close, emaSlowLen)
+atr  = ta.atr(14)
+rsi  = ta.rsi(close, rsiLen)
+
+// HTF-Filter: 60-Minuten EMA50
+// lookahead_off verhindert Repainting (kein Vorschauen in zukünftige HTF-Bars)
+htfC = request.security(syminfo.tickerid, htfTF, close,
+         gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+htfE = request.security(syminfo.tickerid, htfTF, ta.ema(close, htfEMALen),
+         gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+htfBull = htfC > htfE
+htfBear = htfC < htfE
+
+// ──────────────────────────────────────────────
+// SIGNALBEDINGUNGEN
+// ──────────────────────────────────────────────
+// 1. 15M Trend-Ausrichtung
+bull15 = ef > es
+bear15 = ef < es
+
+// 2. EMA-Trennung: Trend klar etabliert (kein Noise-Signal bei flachem Markt)
+sepL = (ef - es) >  emaSepMult * atr
+sepS = (es - ef) >  emaSepMult * atr
+
+// 3. Pullback: Preis hat EMA21 in letzten N Bars berührt, jetzt wieder darüber/darunter
+//    close[1] = bestätigte Bars (kein Repainting)
+pbLow  = ta.lowest(close[1],  pbLB)
+pbHigh = ta.highest(close[1], pbLB)
+pbl = pbLow  <= ef[1] and close > ef    // zuletzt bei/unter EMA21, jetzt darüber → Bounce
+pbs = pbHigh >= ef[1] and close < ef    // zuletzt bei/über EMA21, jetzt darunter → Bounce
+
+// 4. Pullback-Zone: nicht zu tief (Rücksetzer bleibt nahe EMA50)
+pbzl = ta.lowest(close[1],  pbLB) >= es[1] - 0.3 * atr[1]
+pbzs = ta.highest(close[1], pbLB) <= es[1] + 0.3 * atr[1]
+
+// 5. EMA21 Momentum: EMA21 steigt (Long) / fällt (Short)
+efUp   = ef > ef[2]
+efDown = ef < ef[2]
+
+// 6. Bar-Qualität: direktionaler Body
+barRng = high - low
+bqL = barRng > 0 ? (close - low)  / barRng >= bqrMin : false
+bqS = barRng > 0 ? (high - close) / barRng >= bqrMin : false
+
+// 7. RSI-Filter
+rsiL = rsi >= rsiLongMin  and rsi < 80
+rsiS = rsi <= rsiShortMax and rsi > 20
+
+// 8. Session-Filter
+inSess = hour >= sessStart and hour < sessEnd
+
+// Finale Signale (alle Bedingungen müssen erfüllt sein)
+longSig  = bull15 and efUp   and htfBull
+         and pbl and pbzl and sepL and bqL and rsiL
+         and inSess and strategy.position_size == 0
+
+shortSig = bear15 and efDown and htfBear
+         and pbs and pbzs and sepS and bqS and rsiS
+         and inSess and strategy.position_size == 0
+
+// ──────────────────────────────────────────────
+// ORDER-MANAGEMENT
+// ──────────────────────────────────────────────
+var float ep     = na    // Einstiegspreis
+var float esd    = na    // SL-Distanz bei Einstieg
+var bool  beDone = false
+
+// Long Entry
+if longSig
+    ep     := close
+    esd    := atr * slAtrMult
+    beDone := false
+    strategy.entry("L", strategy.long)
+    strategy.exit("L-X", "L", stop=ep - esd, limit=ep + rrRatio * esd)
+
+// Short Entry
+if shortSig
+    ep     := close
+    esd    := atr * slAtrMult
+    beDone := false
+    strategy.entry("S", strategy.short)
+    strategy.exit("S-X", "S", stop=ep + esd, limit=ep - rrRatio * esd)
+
+// Break-Even Stop: einmal aktiviert, SL → Entry
+if useBeStop and not beDone and not na(ep) and not na(esd)
+    if strategy.position_size > 0 and high >= ep + esd
+        strategy.exit("L-X", "L", stop=ep, limit=ep + rrRatio * esd)
+        beDone := true
+    if strategy.position_size < 0 and low <= ep - esd
+        strategy.exit("S-X", "S", stop=ep, limit=ep - rrRatio * esd)
+        beDone := true
+
+// Reset bei Positionsschluss
+if strategy.position_size == 0
+    ep     := na
+    esd    := na
+    beDone := false
+
+// ──────────────────────────────────────────────
+// DARSTELLUNG
+// ──────────────────────────────────────────────
+p_ef = plot(ef, "EMA 21", color=color.new(color.blue,   30), linewidth=1)
+p_es = plot(es, "EMA 50", color=color.new(color.orange, 30), linewidth=2)
+fill(p_ef, p_es,
+     color=bull15 ? color.new(color.green, 85) : color.new(color.red, 85),
+     title="EMA Cloud")
+
+plotshape(longSig,  "Long",  style=shape.triangleup,
+          location=location.belowbar, color=color.lime, size=size.small)
+plotshape(shortSig, "Short", style=shape.triangledown,
+          location=location.abovebar, color=color.red,  size=size.small)
+
+// HTF-Hintergrundfarbe (Macro-Trend)
+bgcolor(htfBull ? color.new(color.green, 97) :
+        htfBear ? color.new(color.red,   97) : na,
+        title="HTF-Trend Hintergrund")

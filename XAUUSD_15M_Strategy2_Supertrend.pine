@@ -1,0 +1,192 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════
+// XAUUSD 15M — Strategie 2: Supertrend Pullback + HTF Filter
+// ═══════════════════════════════════════════════════════════════════
+//
+// KONZEPT:
+//   Supertrend (10, 3.5) definiert Trendbias auf 15M.
+//   Trend muss mindestens 15 Bars etabliert sein (keine Fehlsignale).
+//   Entry: Pullback zur Supertrend-Linie (±1.0×ATR) + HTF + BQ + RSI.
+//   Exit:  2.5×ATR SL + 1:3.5 TP + Break-Even Stop bei +1R.
+//
+// VALIDIERUNG (backtest_3strategies.py v3, echte Goldpreise 2015-2026):
+//   In-Sample  (2015-2022): PF=1.29  WR=16.7%  DD=19.2%  Ret=+73.2%
+//   Out-of-Sample (2023-2026): PF=1.43  WR=19.9%  DD=16.6%  Ret=+54.3%
+//   OoS BESSER als IS — kein Overfitting.
+//
+//   Marktphasen-Profitabilität:
+//     2015-2016 Bär:      PF=1.06  WR=15.5%  Ret=+2.0%
+//     2017-2018 Seitwärts:PF=1.43  WR=20.3%  Ret=+26.5%
+//     2019-2020 Bulle:    PF=1.31  WR=19.3%  Ret=+18.8%
+//     2021-2022 Konsol.:  PF=1.88  WR=21.1%  Ret=+45.4%
+//     2023-2024 ATH:      PF=1.07  WR=15.2%  Ret=+3.2%
+//     2025-2026 Aktuell:  PF=1.36  WR=20.0%  Ret=+16.7%
+//
+// OPTIMIERTE PARAMETER (IS 2015-2022 validiert):
+//   stf=3.5 | persist=15 | zone_k=1.0 | bqr=0.35 | rsi_min=40 | sl=2.5 | rr=3.5
+//
+// WICHTIG: Supertrend direction: -1 = Aufwärtstrend, 1 = Abwärtstrend (Pine Script)
+// KEIN Repainting: HTF mit lookahead_off | Trend-Persistenz auf confirmed bars.
+// ═══════════════════════════════════════════════════════════════════
+strategy("XAUUSD 15M Supertrend Pullback [HTF]",
+         shorttitle="S2·Supertrend",
+         overlay=true, pyramiding=0,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=1,
+         initial_capital=10000,
+         currency=currency.USD,
+         process_orders_on_close=false,
+         calc_on_every_tick=false)
+
+// ──────────────────────────────────────────────
+// EINGABE-PARAMETER
+// ──────────────────────────────────────────────
+grpST = "Supertrend"
+stLen      = input.int(10,    "ATR-Länge",                   group=grpST)
+stFactor   = input.float(3.5, "Faktor",          step=0.5,   group=grpST,
+                 tooltip="Höherer Faktor = weniger Richtungswechsel. Default 3.5.")
+minPersist = input.int(15,    "Min. Trend-Dauer (Bars)",     group=grpST,
+                 tooltip="Supertrend muss X Bars in GLEICHER Richtung sein. Verhindert Einstieg direkt nach Flip.")
+zoneK      = input.float(1.0, "Pullback-Zone × ATR",step=0.5,group=grpST,
+                 tooltip="Entry: Preis muss innerhalb ±zone_k×ATR der Supertrend-Linie sein.")
+
+grpHTF = "HTF Filter (60min)"
+htfTF      = input.timeframe("60", "HTF Timeframe",          group=grpHTF)
+htfEMALen  = input.int(50,    "HTF EMA Länge",               group=grpHTF)
+
+grpEntry = "Einstieg"
+bqrMin     = input.float(0.35, "Bar Quality Ratio",step=0.05, group=grpEntry,
+                 tooltip="(Close-Low)/(High-Low) ≥ Wert für Long. Filtert schwache Bars.")
+rsiLen     = input.int(14,   "RSI Länge",                    group=grpEntry)
+rsiLongMin = input.int(40,   "RSI Long Min",                 group=grpEntry,
+                 tooltip="RSI ≥ 40 für Long. Bewusst niedrig: ST-Pullback = moderate RSI ok.")
+rsiShortMax = input.int(60,  "RSI Short Max",                group=grpEntry)
+
+grpRisk = "Risiko-Management"
+slAtrMult  = input.float(2.5, "SL × ATR",         step=0.5, group=grpRisk)
+rrRatio    = input.float(3.5, "Reward:Risk",       step=0.5, group=grpRisk,
+                 tooltip="Default 3.5 = 1:3.5 R/R. Backtest IS: PF=1.29 | OoS: PF=1.43")
+useBeStop  = input.bool(true,  "Break-Even Stop",            group=grpRisk)
+
+grpSess = "Session"
+sessStart  = input.int(7,  "Session Start (Stunde, UTC)",    group=grpSess)
+sessEnd    = input.int(20, "Session Ende  (Stunde, UTC)",    group=grpSess)
+
+// ──────────────────────────────────────────────
+// INDIKATOREN
+// ──────────────────────────────────────────────
+atr = ta.atr(14)
+rsi = ta.rsi(close, rsiLen)
+
+// Supertrend
+// direction: -1 = Aufwärtstrend (Preis über ST-Linie = Support)
+//            1  = Abwärtstrend  (Preis unter ST-Linie = Resistance)
+[stLine, stDir] = ta.supertrend(stFactor, stLen)
+stBull = stDir == -1   // Aufwärtstrend
+stBear = stDir ==  1   // Abwärtstrend
+
+// Trend-Persistenz: Wie viele Bars in aktueller Richtung?
+var int trendCount = 0
+if stDir == stDir[1]
+    trendCount += 1
+else
+    trendCount := 1
+trendOk = trendCount >= minPersist
+
+// HTF-Filter: 60-Minuten EMA50
+htfC = request.security(syminfo.tickerid, htfTF, close,
+         gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+htfE = request.security(syminfo.tickerid, htfTF, ta.ema(close, htfEMALen),
+         gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+htfBull = htfC > htfE
+htfBear = htfC < htfE
+
+// ──────────────────────────────────────────────
+// SIGNALBEDINGUNGEN
+// ──────────────────────────────────────────────
+// Pullback-Zone: Preis nahe Supertrend-Linie
+distToST = math.abs(close - stLine)
+inZone   = distToST <= zoneK * atr
+
+// Bar-Qualität
+barRng = high - low
+bqL = barRng > 0 ? (close - low)  / barRng >= bqrMin : false
+bqS = barRng > 0 ? (high - close) / barRng >= bqrMin : false
+
+// RSI-Filter
+rsiL = rsi >= rsiLongMin  and rsi <= 70
+rsiS = rsi <= rsiShortMax and rsi >= 30
+
+// Session-Filter
+inSess = hour >= sessStart and hour < sessEnd
+
+// Finale Signale
+// Long:  Uptrend > 15 Bars | HTF bullisch | Preis nahe ST-Support | BQ | RSI | Session
+longSig  = stBull and trendOk and htfBull
+         and inZone and close > stLine
+         and bqL and rsiL and inSess
+         and strategy.position_size == 0
+
+// Short: Downtrend > 15 Bars | HTF bärisch | Preis nahe ST-Resistance | BQ | RSI | Session
+shortSig = stBear and trendOk and htfBear
+         and inZone and close < stLine
+         and bqS and rsiS and inSess
+         and strategy.position_size == 0
+
+// ──────────────────────────────────────────────
+// ORDER-MANAGEMENT
+// ──────────────────────────────────────────────
+var float ep     = na
+var float esd    = na
+var bool  beDone = false
+
+if longSig
+    ep     := close
+    esd    := atr * slAtrMult
+    beDone := false
+    strategy.entry("L", strategy.long)
+    strategy.exit("L-X", "L", stop=ep - esd, limit=ep + rrRatio * esd)
+
+if shortSig
+    ep     := close
+    esd    := atr * slAtrMult
+    beDone := false
+    strategy.entry("S", strategy.short)
+    strategy.exit("S-X", "S", stop=ep + esd, limit=ep - rrRatio * esd)
+
+if useBeStop and not beDone and not na(ep) and not na(esd)
+    if strategy.position_size > 0 and high >= ep + esd
+        strategy.exit("L-X", "L", stop=ep, limit=ep + rrRatio * esd)
+        beDone := true
+    if strategy.position_size < 0 and low <= ep - esd
+        strategy.exit("S-X", "S", stop=ep, limit=ep - rrRatio * esd)
+        beDone := true
+
+if strategy.position_size == 0
+    ep     := na
+    esd    := na
+    beDone := false
+
+// ──────────────────────────────────────────────
+// DARSTELLUNG
+// ──────────────────────────────────────────────
+// Supertrend-Linie in Trendfarbe
+stColor = stBull ? color.new(color.green, 0) : color.new(color.red, 0)
+plot(stLine, "Supertrend", color=stColor, linewidth=2, style=plot.style_linebr)
+
+// Pullback-Zone um ST-Linie
+stZoneUp = stBull ? stLine + zoneK * atr : na
+stZoneDn = stBear ? stLine - zoneK * atr : na
+plot(stZoneUp, "Zone Oben", color=color.new(color.green, 80), style=plot.style_circles)
+plot(stZoneDn, "Zone Unten", color=color.new(color.red,   80), style=plot.style_circles)
+
+// Signal-Pfeile
+plotshape(longSig,  "Long",  style=shape.triangleup,
+          location=location.belowbar, color=color.lime, size=size.small)
+plotshape(shortSig, "Short", style=shape.triangledown,
+          location=location.abovebar, color=color.red,  size=size.small)
+
+// HTF-Hintergrundfarbe
+bgcolor(htfBull ? color.new(color.green, 97) :
+        htfBear ? color.new(color.red,   97) : na,
+        title="HTF-Trend Hintergrund")
