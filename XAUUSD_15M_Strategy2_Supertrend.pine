@@ -57,6 +57,12 @@ riskPct     = input.float(1.0, "Risiko pro Trade (%)",step=0.1, group=grpRisk)
 useBE       = input.bool(true,  "Break-Even Stop",        group=grpRisk)
 beR         = input.float(1.0, "BE Aktivierung (×R)", step=0.1, group=grpRisk)
 
+grpTick     = "Einstieg: Tick-basierter SL/TP"
+slTicks     = input.int(1200,  "SL (Ticks)",           group=grpTick,
+                  tooltip="XAUUSD: 1 Tick = 0.01 → 1200 Ticks = 12.00 $")
+tpTicks     = input.int(2400,  "TP (Ticks)",           group=grpTick,
+                  tooltip="2400 Ticks = 24.00 $ → 1:2 R/R")
+
 grpSess     = "Session"
 sessStr     = input.session("0700-2000","Handelszeit",    group=grpSess)
 sessTz      = input.string("Europe/Berlin","Zeitzone",    group=grpSess)
@@ -99,19 +105,20 @@ rsiS = rsi <= rsiShortMax and rsi >= 30
 
 inSess = not na(time(timeframe.period, sessStr, sessTz))
 
-longSignal  = stBull and trendOk and htfBull and inZone and close > stLine and bqL and rsiL and inSess
-shortSignal = stBear and trendOk and htfBear and inZone and close < stLine and bqS and rsiS and inSess
+// Farbwechsel: Rot→Grün = stDir 1→-1 = Long | Grün→Rot = stDir -1→1 = Short
+longSignal  = stDir == -1 and stDir[1] == 1
+shortSignal = stDir ==  1 and stDir[1] == -1
 
 // ──────────────────────────────────────────────
 // SL / TP / POSITIONSGRÖSSE
 // ──────────────────────────────────────────────
-slDistL = slAtrMult * atr
-slDistS = slAtrMult * atr
+slDistL = slTicks * syminfo.mintick
+slDistS = slTicks * syminfo.mintick
 
 slPriceL = close - slDistL
-tpPriceL = close + rrRatio * slDistL
+tpPriceL = close + tpTicks * syminfo.mintick
 slPriceS = close + slDistS
-tpPriceS = close - rrRatio * slDistS
+tpPriceS = close - tpTicks * syminfo.mintick
 
 riskAmt = strategy.equity * riskPct / 100.0
 qtyL = slDistL > 0 ? riskAmt / slDistL : na
