@@ -18,7 +18,7 @@
 // BE:  Break-Even Stop bei +1R (optional)
 // ═══════════════════════════════════════════════════════════════════
 strategy('ML RSI Strategy [Zeiierman]',
-     shorttitle         = 'ML·RSI·Strat',
+     shorttitle         = 'ML·RSI·S',
      overlay            = false,
      pyramiding         = 0,
      default_qty_type   = strategy.percent_of_equity,
@@ -261,14 +261,10 @@ method sum(Weights w) =>
     w.value + w.slope + w.accel + w.mid + w.pct + w.churn + w.spread + w.regime
 
 method gapTo(Features f, array<float> row, Weights w) =>
-    w.value  * compress(f.value  - row.get(0)) +
-    w.slope  * compress(f.slope  - row.get(1)) +
-    w.accel  * compress(f.accel  - row.get(2)) +
-    w.mid    * compress(f.mid    - row.get(3)) +
-    w.pct    * compress(f.pct    - row.get(4)) +
-    w.churn  * compress(f.churn  - row.get(5)) +
-    w.spread * compress(f.spread - row.get(6)) +
-    w.regime * compress(f.regime - row.get(7))
+    w.value * compress(f.value - row.get(0)) + w.slope * compress(f.slope - row.get(1)) + w.accel *
+     compress(f.accel - row.get(2)) + w.mid * compress(f.mid - row.get(3)) + w.pct *
+     compress(f.pct - row.get(4)) + w.churn * compress(f.churn - row.get(5)) + w.spread *
+     compress(f.spread - row.get(6)) + w.regime * compress(f.regime - row.get(7))
 
 method consider(array<Neighbor> nbrs, int kMax, Neighbor cand) =>
     if nbrs.size() < kMax
