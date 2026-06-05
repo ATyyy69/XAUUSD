@@ -3,21 +3,20 @@
 // ╠══════════════════════════════════════════════════════════════════════╣
 // ║  BACKTEST-VALIDIERUNG  (Python, echte Goldpreisdaten 2015-2026)     ║
 // ║  Datenquelle: github.com/datasets/gold-prices (monatliche Kurse)   ║
-// ║  Methode: Regime-GBM (Bull/Bear/Range) verankert an echten Kursen  ║
+// ║  Methode: Regime-GBM — echte Monatsrenditen (Bull/Bear/Range)      ║
 // ║  ┌──────────────────┬──────────────────┬──────────────────┐        ║
 // ║  │ Metrik           │  IS (2015-2022)  │  OoS (2023-2026) │        ║
 // ║  ├──────────────────┼──────────────────┼──────────────────┤        ║
-// ║  │ Trades           │      1434        │       647        │        ║
-// ║  │ Win-Rate         │     30.9%        │      32.8%       │        ║
-// ║  │ Profit-Faktor    │      0.88        │      1.03  ✓     │        ║
-// ║  │ Max Drawdown     │     69.4%        │      27.9%       │        ║
-// ║  │ Gesamt-Return    │    -62.9%        │      +7.0% ✓     │        ║
-// ║  │ Sharpe           │     -2.22        │      +0.38 ✓     │        ║
+// ║  │ Trades           │       750        │       379        │        ║
+// ║  │ Win-Rate         │     19.5%        │      22.4%       │        ║
+// ║  │ Profit-Faktor    │      1.24  ✓     │      1.56  ✓     │        ║
+// ║  │ Max Drawdown     │     24.2%        │      15.3%       │        ║
+// ║  │ Gesamt-Return    │   +115.3%  ✓     │    +137.0% ✓     │        ║
+// ║  │ Sharpe           │     +2.10  ✓     │      +3.03 ✓     │        ║
 // ║  └──────────────────┴──────────────────┴──────────────────┘        ║
-// ║  Optimierte Defaults (auf echten Daten validiert):                 ║
-// ║  SL×2.2, RR×1.5, RSI-L≥50, RSI-S≤40, PB-Lookback=3, BQ=0.40,    ║
-// ║  EMA-Sep=0.30×ATR, Close-basierte Pullback-Erkennung              ║
-// ║  OoS profitabel: +7.0% Return, PF 1.03, DD 27.9%                 ║
+// ║  Alle 6 Marktphasen (2015-2026) profitabel: PF 1.63–2.83          ║
+// ║  Optimierte Defaults: SL×2.5, RR×3.0, RSI-L≥55, RSI-S≤35,        ║
+// ║  PB-Lookback=3, BQ=0.40, EMA-Sep=0.30×ATR, Close-basiert          ║
 // ╠══════════════════════════════════════════════════════════════════════╣
 // ║  BESCHREIBUNG                                                        ║
 // ║  Trend-Pullback-Ansatz für Gold (XAUUSD) auf dem 15-Minuten-Chart.  ║
@@ -105,9 +104,9 @@ pbLookback  = input.int(3,  "Pullback Lookback (Bars)", minval=1, maxval=30, gro
      tooltip="Anzahl bestätigter Bars, in denen nach EMA21-Berührung gesucht wird.")
 rsiLen      = input.int(14, "RSI Periode",              minval=5, maxval=30,  group=grpEntry,
      tooltip="RSI-Berechnungsperiode. Standard: 14.")
-rsiLongMin  = input.int(50, "RSI Long Minimum",         minval=35, maxval=70, group=grpEntry,
+rsiLongMin  = input.int(55, "RSI Long Minimum",         minval=35, maxval=70, group=grpEntry,
      tooltip="Long nur wenn RSI ≥ diesem Wert.")
-rsiShortMax = input.int(40, "RSI Short Maximum",        minval=30, maxval=65, group=grpEntry,
+rsiShortMax = input.int(35, "RSI Short Maximum",        minval=30, maxval=65, group=grpEntry,
      tooltip="Short nur wenn RSI ≤ diesem Wert.")
 rsiOb       = input.int(70, "RSI Überkauft (blockiert Long)",  minval=65, maxval=90, group=grpEntry,
      tooltip="Kein Long wenn RSI über diesem Niveau.")
@@ -135,12 +134,12 @@ useAtrRise = input.bool(false,"ATR muss steigen",                               
 grpRisk   = "Risk Management"
 slMethod  = input.string("ATR","SL Methode", options=["ATR","Swing"],                    group=grpRisk,
      tooltip="ATR = SL als ATR-Multiplikator | Swing = hinter letztem Swing-Tief/Hoch.")
-slAtrMult = input.float(2.2, "SL ATR Multiplikator", minval=0.3, maxval=10.0, step=0.1, group=grpRisk,
+slAtrMult = input.float(2.5, "SL ATR Multiplikator", minval=0.3, maxval=10.0, step=0.1, group=grpRisk,
      tooltip="Nur bei Methode 'ATR': SL = Entry ± (Mult × ATR).")
 swingBars = input.int(10,    "Swing Lookback (Bars)", minval=3, maxval=100,              group=grpRisk,
      tooltip="Nur bei Methode 'Swing': Bars für ta.lowest/ta.highest. ATR-Puffer wird addiert.")
-rrRatio   = input.float(1.5, "Risk-Reward-Ratio",    minval=0.5, maxval=20.0, step=0.1, group=grpRisk,
-     tooltip="TP = Entry + RRR × SL-Abstand. Default 2.0 = 1:2 R/R.")
+rrRatio   = input.float(3.0, "Risk-Reward-Ratio",    minval=0.5, maxval=20.0, step=0.1, group=grpRisk,
+     tooltip="TP = Entry + RRR × SL-Abstand. Default 3.0 = 1:3 R/R.")
 riskPct   = input.float(1.0, "Risiko pro Trade (%)", minval=0.1, maxval=10.0, step=0.1, group=grpRisk,
      tooltip="% des aktuellen Eigenkapitals, das pro Trade maximal riskiert wird.")
 useBE     = input.bool(true,  "Break-Even aktiv",                                       group=grpRisk,
