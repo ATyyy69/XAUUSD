@@ -1,46 +1,46 @@
 //@version=6
 // Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
 // Original Indicator: Machine Learning RSI | AI Classification & Ranking © Zeiierman
-// Strategy S3: ML RSI Trend Pullback
+// Strategy S3 v2: ML RSI Trend Pullback — HTF + Session gefiltert
 // ═══════════════════════════════════════════════════════════════════
 // KONZEPT:
 //   Eintritt in etablierte ML-Trends (stanceAge ≥ 5 Bars) nach
-//   einem RSI-Rücksetzer in die neutrale Zone.
-//   Long: ML RSI dips unter 45 → kreuzt zurück über 45 (Bounce).
-//   Short: ML RSI steigt über 55 → kreuzt zurück unter 55 (Rejection).
-//   SL: Hinter ML Supertrend + Puffer | TP: 2.5×SL (1:2.5 R:R).
-//   Qualitäts-Filter: Rank ≥ 50 innerhalb des etablierten Trends.
+//   einem tiefen RSI-Rücksetzer in die neutrale Zone.
+//   Long:  mlRSI fällt unter 42 → kreuzt zurück über 46 (Bounce).
+//   Short: mlRSI steigt über 58 → kreuzt zurück unter 54 (Rejection).
+//   Filter: 60M HTF EMA50 + Session 07–20 UTC + kein Chop.
+//   SL: ML ST + 0.4×ATR | TP: 3×R | BE: +1R
 // ═══════════════════════════════════════════════════════════════════
 strategy('ML RSI S3 · Pullback',
-     shorttitle         = 'ML·S3·Pull',
-     overlay            = false,
-     pyramiding         = 0,
-     default_qty_type   = strategy.percent_of_equity,
-     default_qty_value  = 1,
-     initial_capital    = 10000,
-     currency           = currency.USD,
+     shorttitle              = 'ML·S3·Pull',
+     overlay                 = false,
+     pyramiding              = 0,
+     default_qty_type        = strategy.percent_of_equity,
+     default_qty_value       = 1,
+     initial_capital         = 10000,
+     currency                = currency.USD,
      process_orders_on_close = true,
-     max_bars_back      = 2100,
-     max_labels_count   = 500,
-     max_lines_count    = 500,
-     precision          = 2)
+     max_bars_back           = 2100,
+     max_labels_count        = 500,
+     max_lines_count         = 500,
+     precision               = 2)
 
-// ~~ Tooltips {
-var string t1  = "PRICE SOURCE\n\nThe series every RSI feature is built from (close, hl2, etc.)."
-var string t2  = "BASE RSI LENGTH\n\nThe core RSI period that seeds the entire feature set.\n\nTUNING: Lower (7–10) = more signals. Higher (20–30) = fewer, more deliberate signals."
-var string t3  = "MEMORY DEPTH (bars)\n\nHow many past bars are stored and scanned as potential analogs.\n\nTUNING: 300–500 suits most instruments."
-var string t4  = "ANALOG COUNT (k)\n\nHow many nearest historical matches vote on the current bar.\n\nTUNING: 5–8 = reactive. 12–20 = smoother consensus."
-var string t5  = "SHOW SIGNAL MARKERS\n\nToggles the 'L' (long) and 'S' (short) entry labels on the chart."
-var string t6  = "CANDLE COLORING\n\nPaints candles with the current regime color."
-var string t7  = "MIN RANK TO SIGNAL\n\nThe quality bar (0–100) a setup must clear before a signal can fire."
-var string t8  = "MIN CONFIDENCE TO SIGNAL\n\nMinimum engine conviction (0–100) required to fire."
-var string t9  = "TREND GATE\n\nBlocks signals that fight the ML Supertrend direction."
-var string t10 = "VOLATILITY BAND\n\nOnly allows signals while volatility sits inside a healthy window."
-var string t11 = "MIN VOL RANK\n\nLower edge (0–100) of the healthy volatility window."
-var string t12 = "CHOP FILTER\n\nBlocks signals when the market is range-bound / choppy."
-var string t13 = "LEARNING SENSITIVITY (×ATR)\n\nHow big a forward move must be before the engine labels a past bar a real win or loss."
-var string t14 = "AUTO-OPTIMIZE WEIGHTS\n\nLets the engine learn how important each of the 8 RSI features is."
-var string t15 = "ADAPTATION SPEED\n\nHow fast the learned weights drift toward newly computed values."
+// ─── TOOLTIPS ────────────────────────────────────────────────────────────────
+var string t1  = "PRICE SOURCE"
+var string t2  = "BASE RSI LENGTH\n\nLower (7–10) = more signals. Higher (20–30) = fewer, cleaner."
+var string t3  = "MEMORY DEPTH\n\n300–500 suits most instruments."
+var string t4  = "ANALOG COUNT (k)\n\n5–8 = reactive. 12–20 = smoother consensus."
+var string t5  = "SHOW ENTRY MARKERS\n\nToggles ▲/▼ arrows on the price chart."
+var string t6  = "CANDLE COLORING\n\nSubtle regime tint on price candles (off by default)."
+var string t7  = "MIN RANK (0–100)"
+var string t8  = "MIN CONFIDENCE (0–100)"
+var string t9  = "TREND GATE"
+var string t10 = "VOLATILITY BAND"
+var string t11 = "MIN VOL RANK"
+var string t12 = "CHOP FILTER"
+var string t13 = "LEARNING SENSITIVITY (×ATR)"
+var string t14 = "AUTO-OPTIMIZE WEIGHTS"
+var string t15 = "ADAPTATION SPEED"
 var string t16 = "WEIGHT · RSI VALUE"
 var string t17 = "WEIGHT · RSI SLOPE"
 var string t18 = "WEIGHT · RSI ACCELERATION"
@@ -49,20 +49,18 @@ var string t20 = "WEIGHT · RSI PERCENTILE"
 var string t21 = "WEIGHT · RSI VOLATILITY"
 var string t22 = "WEIGHT · RSI FAST/SLOW SPREAD"
 var string t23 = "WEIGHT · RSI REGIME"
-var string t24 = "SHOW ML SUPERTREND\n\nToggles the adaptive trailing-stop line."
-var string t25 = "SUPERTREND SOURCE\n\nPrice series the Supertrend bands are built around."
-var string t26 = "ATR MULTIPLIER\n\nBase distance of the Supertrend bands from price, in ATR units."
-var string t27 = "ML BAND ADAPTIVITY\n\nHow strongly engine conviction reshapes the Supertrend band width."
-var string t28 = "SIGNAL LINE · TYPE"
-var string t29 = "SIGNAL LINE · LENGTH"
-var string t30 = "SIGNAL LINE · BB STDDEV"
-var string t31 = "SIGNAL COLORS"
-var string t32 = "TRAILING STOP & CLOUD COLORS"
-var string t33 = "RSI COLORS"
-var string t34 = "SIGNAL LINE COLORS"
-//}
+var string t24 = "SHOW ML SUPERTREND LINE"
+var string t25 = "SUPERTREND SOURCE"
+var string t26 = "ATR MULTIPLIER\n\nDefault 2.5 — saubere Trends ohne zu viele Flips auf XAUUSD 15M."
+var string t27 = "ML BAND ADAPTIVITY"
+var string t28 = "SIGNAL LINE TYPE"
+var string t29 = "SIGNAL LINE LENGTH"
+var string t31 = "ENTRY ARROW COLORS"
+var string t32 = "SUPERTREND LINE COLORS"
+var string t33 = "RSI LINE COLORS"
+var string t34 = "SIGNAL LINE COLOR"
 
-// ~~ TYPES {
+// ─── TYPES ───────────────────────────────────────────────────────────────────
 type Features
     float value
     float slope
@@ -117,77 +115,69 @@ type Setup
     float rank = 0.0
     float conf = 0.0
     int   dir  = 0
-//}
 
-// ~~ INPUTS {
-// ~~ ML Brain {
-priceSrc    = input.source(close,  'Price Source',         group = "ML Brain",             tooltip = t1)
-rsiBase     = input.int(14,        'Base RSI Length',      group = "ML Brain", minval = 2, tooltip = t2)
-memoryDepth = input.int(500,       'Memory Depth (bars)',  group = "ML Brain", minval = 80, maxval = 5000, tooltip = t3)
-kNeighbors  = input.int(8,         'Analog Count (k)',     group = "ML Brain", minval = 1,  maxval = 64,   tooltip = t4)
+// ─── INPUTS ──────────────────────────────────────────────────────────────────
+// ML Brain
+priceSrc    = input.source(close, 'Price Source',        group = 'ML Brain',                 tooltip = t1)
+rsiBase     = input.int(14,       'Base RSI Length',     group = 'ML Brain', minval = 2,     tooltip = t2)
+memoryDepth = input.int(500,      'Memory Depth (bars)', group = 'ML Brain', minval = 80, maxval = 5000, tooltip = t3)
+kNeighbors  = input.int(8,        'Analog Count (k)',    group = 'ML Brain', minval = 1, maxval = 64, tooltip = t4)
 winLen      = 100
 spacingBars = 4
 horizonBars = 4
-//}
-// ~~ Signals {
-showMarks    = input.bool(true,  'Show Signal Markers',                            inline = 'show', group = "Signals", tooltip = t5)
-paintBars    = input.bool(true,  'Candle coloring',                                inline = 'show', group = "Signals", tooltip = t6)
-gateRank     = input.int(50,     'Min Rank to Signal',    minval = 0, maxval = 100, group = "Signals", tooltip = t7)
-gateConf     = input.int(40,     'Min Confidence to Signal', minval = 0, maxval = 100, group = "Signals", tooltip = t8)
-useTrendGate = input.bool(true,  'Trend Gate',                                      group = "Signals", tooltip = t9)
-useVolBand   = input.bool(true,  'Volatility Band',                    inline = 'vol', group = "Signals", tooltip = t10)
-volBandLo    = input.int(20,     'Min Vol Rank',          minval = 0, maxval = 100, inline = 'vol', group = "Signals", tooltip = t11)
-useChop      = input.bool(true,  'Chop Filter',                                     group = "Signals", tooltip = t12)
-atrFactor    = input.float(0.5,  'Learning Sensitivity (×ATR)', minval = 0, step = 0.1, group = "Signals", tooltip = t13)
+
+// Signals
+showMarks    = input.bool(true,  'Show Entry Markers', inline = 'show', group = 'Signals', tooltip = t5)
+paintBars    = input.bool(false, 'Candle Coloring',    inline = 'show', group = 'Signals', tooltip = t6)
+gateRank     = input.int(50,     'Min Rank',           minval = 0, maxval = 100, group = 'Signals', tooltip = t7)
+gateConf     = input.int(40,     'Min Confidence',     minval = 0, maxval = 100, group = 'Signals', tooltip = t8)
+useTrendGate = input.bool(true,  'Trend Gate',         group = 'Signals', tooltip = t9)
+useVolBand   = input.bool(true,  'Volatility Band',    inline = 'vol', group = 'Signals', tooltip = t10)
+volBandLo    = input.int(20,     'Min Vol Rank',       minval = 0, maxval = 100, inline = 'vol', group = 'Signals', tooltip = t11)
+useChop      = input.bool(true,  'Chop Filter',        group = 'Signals', tooltip = t12)
+atrFactor    = input.float(0.5,  'Learning Sensitivity', minval = 0, step = 0.1, group = 'Signals', tooltip = t13)
 trendLen  = 50
 chopCut   = 0.5
 volBandHi = 85
-//}
-// ~~ Auto Weight Optimizer {
-autoWeightsOn = input.bool(true,  'Auto-Optimize Weights', group = "Auto Weight Optimizer", tooltip = t14)
-autoSpeed     = input.float(1,    'Adaptation Speed', minval = 0.005, maxval = 1.0, step = 0.005, group = "Auto Weight Optimizer", active = autoWeightsOn, tooltip = t15)
+
+// Auto Weight Optimizer
+autoWeightsOn = input.bool(true, 'Auto-Optimize Weights', group = 'Auto Weight Optimizer', tooltip = t14)
+autoSpeed     = input.float(1,   'Adaptation Speed', minval = 0.005, maxval = 1.0, step = 0.005, group = 'Auto Weight Optimizer', active = autoWeightsOn, tooltip = t15)
 autoFloor   = 0.5
 autoMinRows = 60
-//}
-// ~~ Feature Weights {
-wVal = input.float(1.0, 'RSI Value',          minval = 0, step = 0.1, group = "Feature Weights", active = autoWeightsOn == false, tooltip = t16)
-wSlp = input.float(1.0, 'RSI Slope',          minval = 0, step = 0.1, group = "Feature Weights", active = autoWeightsOn == false, tooltip = t17)
-wAcc = input.float(1.0, 'RSI Acceleration',   minval = 0, step = 0.1, group = "Feature Weights", active = autoWeightsOn == false, tooltip = t18)
-wMid = input.float(1.0, 'RSI Midpoint Dist',  minval = 0, step = 0.1, group = "Feature Weights", active = autoWeightsOn == false, tooltip = t19)
-wPct = input.float(1.0, 'RSI Percentile',     minval = 0, step = 0.1, group = "Feature Weights", active = autoWeightsOn == false, tooltip = t20)
-wChn = input.float(1.0, 'RSI Volatility',     minval = 0, step = 0.1, group = "Feature Weights", active = autoWeightsOn == false, tooltip = t21)
-wSpr = input.float(1.0, 'RSI Fast/Slow Spread', minval = 0, step = 0.1, group = "Feature Weights", active = autoWeightsOn == false, tooltip = t22)
-wReg = input.float(1.0, 'RSI Regime',         minval = 0, step = 0.1, group = "Feature Weights", active = autoWeightsOn == false, tooltip = t23)
-//}
-// ~~ ML Supertrend {
-showSt     = input.bool(true,   'Show ML Supertrend',  group = "ML Supertrend", tooltip = t24)
-stSrc      = input.source(hl2,  'Supertrend Source',   group = "ML Supertrend", active = showSt, tooltip = t25)
-stMultBase = input.float(1.5,   'ATR Multiplier',      group = "ML Supertrend", active = showSt, minval = 0.5, step = 0.1, tooltip = t26)
-stMlResp   = input.float(1,     'ML Band Adaptivity',  group = "ML Supertrend", active = showSt, minval = 0.0, maxval = 1.0, step = 0.05, tooltip = t27)
-stAtrLen  = 10
-stGlow    = true
-showCloud = true
-smoothLen = 10
-//}
-// ~~ RSI Signal Line {
-maTypeInput   = input.string('SMA', 'Type', options = ['None','SMA','SMA + Bollinger Bands','EMA','SMMA (RMA)','WMA','VWMA'], group = "RSI Signal Line", tooltip = t28)
-maLengthInput = input.int(14,       'Length',   group = "RSI Signal Line", active = maTypeInput != 'None', tooltip = t29)
-bbMultInput   = input.float(2.0,    'BB StdDev', group = "RSI Signal Line", minval = 0.001, maxval = 50, step = 0.5, active = maTypeInput == 'SMA + Bollinger Bands', tooltip = t30)
-//}
-// ~~ Colors {
-sigBull       = input.color(color.lime,              'Long / Bullish',  inline = 'sig', group = "Colors · Signals",                tooltip = t31)
-sigBear       = input.color(color.red,               'Short / Bearish', inline = 'sig', group = "Colors · Signals")
-trailBull     = input.color(color.blue,              'Uptrend',         inline = 'tr',  group = "Colors · Trailing Stop & Cloud", tooltip = t32)
-trailBear     = input.color(color.white,             'Downtrend',       inline = 'tr',  group = "Colors · Trailing Stop & Cloud")
-rsiBull       = input.color(color.blue,              'Bullish',         inline = 'rs',  group = "Colors · RSI",                   tooltip = t33)
-rsiBear       = input.color(color.white,             'Bearish',         inline = 'rs',  group = "Colors · RSI")
-smoothLineCol = input.color(#e3b13a,                 'Signal Line',     inline = 'sm',  group = "Colors · RSI", active = maTypeInput != 'None', tooltip = t34)
-bbAreaCol     = input.color(color.new(#e3b13a, 90),  'BB Fill',         inline = 'sm',  group = "Colors · RSI", active = maTypeInput == 'SMA + Bollinger Bands')
-//}
-neutralCol = color.new(color.gray, 100)
-//}
 
-// ~~ HELPERS & METHODS {
+// Feature Weights
+wVal = input.float(1.0, 'RSI Value',          minval = 0, step = 0.1, group = 'Feature Weights', active = autoWeightsOn == false, tooltip = t16)
+wSlp = input.float(1.0, 'RSI Slope',          minval = 0, step = 0.1, group = 'Feature Weights', active = autoWeightsOn == false, tooltip = t17)
+wAcc = input.float(1.0, 'RSI Acceleration',   minval = 0, step = 0.1, group = 'Feature Weights', active = autoWeightsOn == false, tooltip = t18)
+wMid = input.float(1.0, 'RSI Midpoint Dist',  minval = 0, step = 0.1, group = 'Feature Weights', active = autoWeightsOn == false, tooltip = t19)
+wPct = input.float(1.0, 'RSI Percentile',     minval = 0, step = 0.1, group = 'Feature Weights', active = autoWeightsOn == false, tooltip = t20)
+wChn = input.float(1.0, 'RSI Volatility',     minval = 0, step = 0.1, group = 'Feature Weights', active = autoWeightsOn == false, tooltip = t21)
+wSpr = input.float(1.0, 'RSI Fast/Slow Spread', minval = 0, step = 0.1, group = 'Feature Weights', active = autoWeightsOn == false, tooltip = t22)
+wReg = input.float(1.0, 'RSI Regime',         minval = 0, step = 0.1, group = 'Feature Weights', active = autoWeightsOn == false, tooltip = t23)
+
+// ML Supertrend
+showSt     = input.bool(true,  'Show ML Supertrend', group = 'ML Supertrend', tooltip = t24)
+stSrc      = input.source(hl2, 'Supertrend Source',  group = 'ML Supertrend', active = showSt, tooltip = t25)
+stMultBase = input.float(2.5,  'ATR Multiplier',     group = 'ML Supertrend', active = showSt, minval = 0.5, step = 0.1, tooltip = t26)
+stMlResp   = input.float(1.0,  'ML Band Adaptivity', group = 'ML Supertrend', active = showSt, minval = 0.0, maxval = 1.0, step = 0.05, tooltip = t27)
+stAtrLen  = 10
+smoothLen = 10
+
+// RSI Signal Line
+maTypeInput   = input.string('EMA', 'Type',   options = ['None','SMA','EMA','SMMA (RMA)','WMA'], group = 'RSI Signal Line', tooltip = t28)
+maLengthInput = input.int(9,        'Length', group = 'RSI Signal Line', active = maTypeInput != 'None', tooltip = t29)
+
+// Colors
+sigBull       = input.color(#26c6da, 'Long',      inline = 'sig', group = 'Colors · Signals',    tooltip = t31)
+sigBear       = input.color(#ff7043, 'Short',     inline = 'sig', group = 'Colors · Signals')
+trailBull     = input.color(#26c6da, 'Uptrend',   inline = 'tr',  group = 'Colors · Supertrend', tooltip = t32)
+trailBear     = input.color(#ff7043, 'Downtrend', inline = 'tr',  group = 'Colors · Supertrend')
+rsiBull       = input.color(#26c6da, 'Bullish',   inline = 'rs',  group = 'Colors · RSI',        tooltip = t33)
+rsiBear       = input.color(#ff7043, 'Bearish',   inline = 'rs',  group = 'Colors · RSI')
+smoothLineCol = input.color(#e3b13a, 'Signal',    inline = 'sm',  group = 'Colors · RSI',        active = maTypeInput != 'None', tooltip = t34)
+
+// ─── HELPERS & METHODS ───────────────────────────────────────────────────────
 scale01(float _v, int _len) =>
     lo = ta.lowest(_v, _len)
     hi = ta.highest(_v, _len)
@@ -201,14 +191,11 @@ ma(float source, int length, string mtype) =>
     float _ema  = ta.ema(source, length)
     float _rma  = ta.rma(source, length)
     float _wma  = ta.wma(source, length)
-    float _vwma = ta.vwma(source, length)
     switch mtype
-        'SMA'                   => _sma
-        'SMA + Bollinger Bands' => _sma
-        'EMA'                   => _ema
-        'SMMA (RMA)'            => _rma
-        'WMA'                   => _wma
-        'VWMA'                  => _vwma
+        'SMA'        => _sma
+        'EMA'        => _ema
+        'SMMA (RMA)' => _rma
+        'WMA'        => _wma
         => na
 
 autoFeatureWeights(matrix<float> m, int minRows, float floor) =>
@@ -286,9 +273,8 @@ method tally(Vote v, Neighbor n) =>
 
 method aligned(Context c, int dir) =>
     dir == 1 and c.upTrend or dir == -1 and c.downTrend
-//}
 
-// ~~ RSI FEATURE ENGINE {
+// ─── RSI FEATURE ENGINE ──────────────────────────────────────────────────────
 rOsc   = ta.rsi(priceSrc, rsiBase)
 rOscF  = ta.rsi(priceSrc, math.max(2, math.round(rsiBase / 2)))
 rOscS  = ta.rsi(priceSrc, rsiBase * 2)
@@ -306,9 +292,8 @@ Features cur = Features.new(
  scale01(ta.ema(rOsc, 20) - 50.0, winLen))
 
 Weights wts = Weights.new(wVal, wSlp, wAcc, wMid, wPct, wChn, wSpr, wReg)
-//}
 
-// ~~ FEATURE BANK {
+// ─── FEATURE BANK ────────────────────────────────────────────────────────────
 var matrix<float> bank = matrix.new<float>(0, 9)
 
 moveFwd = priceSrc - priceSrc[horizonBars]
@@ -331,9 +316,8 @@ if barstate.isconfirmed and bar_index > horizonBars
     bank.add_row(0, row)
     if bank.rows() > memoryDepth
         bank.remove_row(bank.rows() - 1)
-//}
 
-// ~~ AUTO WEIGHT OPTIMIZER {
+// ─── AUTO WEIGHT OPTIMIZER ───────────────────────────────────────────────────
 var array<float> wAuto = array.new<float>(8, 1.0)
 if autoWeightsOn and barstate.isconfirmed
     array<float> wRaw = autoFeatureWeights(bank, autoMinRows, autoFloor)
@@ -350,9 +334,8 @@ if autoWeightsOn
     wts.churn  := wAuto.get(5)
     wts.spread := wAuto.get(6)
     wts.regime := wAuto.get(7)
-//}
 
-// ~~ NEIGHBOR ENGINE {
+// ─── NEIGHBOR ENGINE ─────────────────────────────────────────────────────────
 var array<Neighbor> nbrs = array.new<Neighbor>()
 nbrs.clear()
 
@@ -365,9 +348,8 @@ if bankN > 1
             g   = cur.gapTo(row, wts)
             if not na(g)
                 nbrs.consider(kNeighbors, Neighbor.new(g, int(row.get(8))))
-//}
 
-// ~~ DISTANCE-WEIGHTED VOTING {
+// ─── DISTANCE-WEIGHTED VOTING ────────────────────────────────────────────────
 Vote vote   = Vote.new()
 float gapSum = 0.0
 int   kCount = nbrs.size()
@@ -385,9 +367,8 @@ eng.agreeFrac   := vote.total > 0 ? (eng.biasDir == 1 ? vote.bull : eng.biasDir 
 avgGap       = kCount > 0 ? gapSum / kCount : 0.0
 gapScale     = wts.sum() * 0.45 + 1e-9
 eng.gapTight := math.max(0.0, math.min(1.0, 1.0 - avgGap / gapScale))
-//}
 
-// ~~ CONTEXT / REGIME {
+// ─── CONTEXT / REGIME ────────────────────────────────────────────────────────
 var float stLong_  = na
 var float stShort_ = na
 var int   stDir_   = 1
@@ -401,7 +382,7 @@ slopeUp_   = rOsc > rOsc[stepLen]
 oscReg_    = ta.ema(rOsc, 20)
 chopNow_   = useChop ? chopRaw_ : false
 
-// ~~ ML ADAPTIVE SUPERTREND {
+// ML Adaptive Supertrend
 convInst     = math.max(-1.0, math.min(1.0, eng.analogScore / 1.5))
 convSmoothed = ta.ema(convInst, smoothLen)
 mlDrive      = math.max(0.0, math.min(1.0,
@@ -423,7 +404,6 @@ stDir_   := na(stDir_[1]) ? 1 :
 stLine_  = stDir_ == 1 ? stLong_ : stShort_
 stFlipUp = stDir_ == 1  and stDir_[1] == -1
 stFlipDn = stDir_ == -1 and stDir_[1] ==  1
-//}
 
 Context ctx = Context.new(
  stDir_ == 1, stDir_ == -1, atrPct,
@@ -432,9 +412,8 @@ Context ctx = Context.new(
  eng.biasDir == 1 and slopeUp_ or eng.biasDir == -1 and not slopeUp_,
  eng.biasDir == 1 and rOsc > 70 or eng.biasDir == -1 and rOsc < 30,
  ta.ema(rOsc, 5) > ta.ema(rOsc, 5)[1])
-//}
 
-// ~~ SIGNAL STATE / PERSISTENCE {
+// ─── SIGNAL STATE ────────────────────────────────────────────────────────────
 var int stanceState = 0
 var int stanceAge   = 0
 
@@ -446,9 +425,8 @@ stanceState := eng.biasDir == 1 and gatesPass ? 1 :
 stanceChanged = ta.change(stanceState) != 0
 stanceAge     := stanceChanged ? 0 : stanceAge + 1
 earlyFlip     = stanceChanged and (stanceChanged[1] or stanceChanged[2] or stanceChanged[3])
-//}
 
-// ~~ RANK / CONFIDENCE {
+// ─── RANK / CONFIDENCE ───────────────────────────────────────────────────────
 rankScore(Engine e, Context c, int age, bool flip) =>
     pAgree  = 25.0 * e.agreeFrac
     pGap    = 15.0 * e.gapTight
@@ -475,140 +453,123 @@ Setup setup = Setup.new()
 setup.dir  := eng.biasDir
 setup.rank := rankScore(eng, ctx, stanceAge, earlyFlip)
 setup.conf := confScore(eng, ctx, stanceAge, earlyFlip)
-//}
 
-// ~~ SIGNALS {
-var int lastEntryBar = na
-closeOnly = true
-coolBars  = 5
-flipLong  = stanceState == 1  and stanceState[1] != 1
-flipShort = stanceState == -1 and stanceState[1] != -1
-qualifies = setup.rank >= gateRank and setup.conf >= gateConf
-barOK     = not closeOnly or barstate.isconfirmed
-coolOK    = na(lastEntryBar) or bar_index - lastEntryBar >= coolBars
+// ─── REGIME TONE ─────────────────────────────────────────────────────────────
+intensity  = math.max(0.0, math.min(1.0, ta.ema(setup.rank, 3) / 100.0))
+regimeTone = stDir_ == 1 ? trailBull : trailBear
 
-triggerLong  = flipLong  and qualifies and coolOK and barOK
-triggerShort = flipShort and qualifies and coolOK and barOK
-if triggerLong or triggerShort
-    lastEntryBar := bar_index
-//}
-
-// ~~ REGIME TONE {
-intensity   = math.max(0.0, math.min(1.0, ta.ema(setup.rank, 3) / 100.0))
-regimeDisp  = stDir_
-regimeTone  = regimeDisp == 1 ? trailBull : trailBear
-//}
-
-// ~~ VISUALIZATION {
+// ─── ML RSI ──────────────────────────────────────────────────────────────────
 mlTilt = math.max(-1.0, math.min(1.0, convSmoothed)) * intensity * 18.0
 mlRSI  = ta.ema(math.max(0.0, math.min(100.0, rOsc + mlTilt)), 3)
-rsiCol = color.from_gradient(mlRSI, 28, 72, rsiBear, rsiBull)
 
-hOB  = hline(70,  'OB',  color = color.new(color.gray, 0), linestyle = hline.style_dashed)
-hMid = hline(50,  'Mid', color = color.new(color.gray, 0), linestyle = hline.style_dotted)
-hOS  = hline(30,  'OS',  color = color.new(color.gray, 0), linestyle = hline.style_dashed)
-fill(hOB, hOS, color = color.rgb(126, 87, 194, 90), title = 'Regime Band Tint')
+// ─── RSI PANE (Clean) ────────────────────────────────────────────────────────
+hline(70, 'OB',  color = color.new(color.gray, 55), linestyle = hline.style_dashed)
+hline(50, 'Mid', color = color.new(color.gray, 55), linestyle = hline.style_dotted)
+hline(30, 'OS',  color = color.new(color.gray, 55), linestyle = hline.style_dashed)
 
-midPlot = plot(50,    'Midline', color = na, display = display.none)
-rsiPlt  = plot(mlRSI, 'ML RSI',  color = rsiCol, linewidth = 2)
-fill(rsiPlt, midPlot, 100, 70, top_color = color.new(rsiBull, 0),  bottom_color = color.new(rsiBull, 100), title = 'OB Gradient')
-fill(rsiPlt, midPlot, 30,  0,  top_color = color.new(rsiBear, 100), bottom_color = color.new(rsiBear, 0),  title = 'OS Gradient')
+// Pullback zone markers
+hline(46, 'PB Bull Bounce', color = color.new(#26c6da, 70), linestyle = hline.style_dotted)
+hline(54, 'PB Bear Reject', color = color.new(#ff7043, 70), linestyle = hline.style_dotted)
 
-enableMA       = maTypeInput != 'None'
-isBB           = maTypeInput == 'SMA + Bollinger Bands'
-smoothingMA    = enableMA ? ma(mlRSI, maLengthInput, maTypeInput) : na
-smoothingStdev = isBB ? ta.stdev(mlRSI, maLengthInput) * bbMultInput : na
+rsiLineCol = mlRSI >= 50 ? rsiBull : rsiBear
+rsiMainPlt = plot(mlRSI, 'ML RSI', color = rsiLineCol, linewidth = 2)
+midRefPlt  = plot(50,    'Mid Ref', color = na, display = display.none)
+fill(rsiMainPlt, midRefPlt, color = mlRSI >= 50 ? color.new(rsiBull, 82) : color.new(rsiBear, 82))
 
-smaPlot     = plot(smoothingMA, 'RSI Signal Line', color = enableMA ? smoothLineCol : na, linewidth = 1)
-bbUpperPlot = plot(isBB ? smoothingMA + smoothingStdev : na, 'BB Upper', color = isBB ? color.new(smoothLineCol, 40) : na)
-bbLowerPlot = plot(isBB ? smoothingMA - smoothingStdev : na, 'BB Lower', color = isBB ? color.new(smoothLineCol, 40) : na)
-fill(bbUpperPlot, bbLowerPlot, color = isBB ? bbAreaCol : na, title = 'BB Fill')
+enableMA = maTypeInput != 'None'
+plot(enableMA ? ma(mlRSI, maLengthInput, maTypeInput) : na, 'Signal Line',
+     color = smoothLineCol, linewidth = 1)
 
-barTone = color.new(regimeTone, 0)
-col_    = paintBars ? barTone : na
-plotcandle(open, high, low, close, title = 'Candle Coloring', color = col_, wickcolor = col_, bordercolor = col_, force_overlay = true)
-
+// ─── PRICE CHART: ML SUPERTREND (Clean — no cloud) ───────────────────────────
 stUpVal = showSt and stDir_ == 1  ? stLine_ : na
 stDnVal = showSt and stDir_ == -1 ? stLine_ : na
-plot(stGlow ? stUpVal : na, 'ST Up Glow',    color = color.new(trailBull, 70), linewidth = 6, style = plot.style_linebr, force_overlay = true)
-plot(stGlow ? stDnVal : na, 'ST Down Glow',  color = color.new(trailBear, 70), linewidth = 6, style = plot.style_linebr, force_overlay = true)
-plot(stUpVal, 'ML Supertrend Up',   color = trailBull, linewidth = 2, style = plot.style_linebr, force_overlay = true)
-plot(stDnVal, 'ML Supertrend Down', color = trailBear, linewidth = 2, style = plot.style_linebr, force_overlay = true)
 
-cloudLine = showSt ? stLine_ : na
-cloudRef  = showSt ? stSrc   : na
-cloudA = not na(cloudLine) and not na(cloudRef) ? cloudLine + (cloudRef - cloudLine) * 0.25 : na
-cloudB = not na(cloudLine) and not na(cloudRef) ? cloudLine + (cloudRef - cloudLine) * 0.50 : na
-cloudC = not na(cloudLine) and not na(cloudRef) ? cloudLine + (cloudRef - cloudLine) * 0.75 : na
+plot(stUpVal, 'ST Glow ▲', color = color.new(trailBull, 62), linewidth = 5, style = plot.style_linebr, force_overlay = true)
+plot(stDnVal, 'ST Glow ▼', color = color.new(trailBear, 62), linewidth = 5, style = plot.style_linebr, force_overlay = true)
+plot(stUpVal, 'ML ST ▲',   color = trailBull, linewidth = 2, style = plot.style_linebr, force_overlay = true)
+plot(stDnVal, 'ML ST ▼',   color = trailBear, linewidth = 2, style = plot.style_linebr, force_overlay = true)
 
-cloudBaseColor = regimeTone
-pCloudLine = plot(showCloud ? cloudLine : na, 'Cloud Active Line', color = neutralCol, display = display.none, force_overlay = true)
-pCloudA    = plot(showCloud ? cloudA    : na, 'Cloud Layer A',     color = neutralCol, display = display.none, force_overlay = true)
-pCloudB    = plot(showCloud ? cloudB    : na, 'Cloud Layer B',     color = neutralCol, display = display.none, force_overlay = true)
-pCloudC    = plot(showCloud ? cloudC    : na, 'Cloud Layer C',     color = neutralCol, display = display.none, force_overlay = true)
-pCloudRef  = plot(showCloud ? cloudRef  : na, 'Cloud Reference',   color = neutralCol, display = display.none, force_overlay = true)
-fill(pCloudLine, pCloudA, color = showCloud ? color.new(cloudBaseColor, 60) : na, title = 'Cloud Fill 1')
-fill(pCloudA,    pCloudB, color = showCloud ? color.new(cloudBaseColor, 72) : na, title = 'Cloud Fill 2')
-fill(pCloudB,    pCloudC, color = showCloud ? color.new(cloudBaseColor, 84) : na, title = 'Cloud Fill 3')
-fill(pCloudC,    pCloudRef, color = showCloud ? color.new(cloudBaseColor, 92) : na, title = 'Cloud Fill 4')
+plotshape(showSt and stFlipUp ? stLine_ : na, 'Flip ▲', shape.circle, location.absolute, trailBull, size = size.tiny,  force_overlay = true)
+plotshape(showSt and stFlipDn ? stLine_ : na, 'Flip ▼', shape.circle, location.absolute, trailBear, size = size.tiny,  force_overlay = true)
 
-plotshape(showSt and stFlipUp ? stLine_ : na, 'ST Flip Up', shape.circle, location.absolute, trailBull, size = size.tiny,  force_overlay = true)
-plotshape(showSt and stFlipDn ? stLine_ : na, 'ST Flip Dn', shape.circle, location.absolute, trailBear, size = size.tiny,  force_overlay = true)
+barTone = stDir_ == 1 ? color.new(trailBull, 85) : color.new(trailBear, 85)
+plotcandle(open, high, low, close, 'Candles',
+     color = paintBars ? barTone : na, wickcolor = paintBars ? barTone : na,
+     bordercolor = na, force_overlay = true)
 
-placebuy  = ta.lowest(low,   5)
-placesell = ta.highest(high, 5)
-plotshape(showMarks and triggerLong  ? placebuy  : na, 'Long',  shape.triangleup,   location.absolute, sigBull,                 size = size.tiny,  force_overlay = true)
-plotshape(showMarks and triggerShort ? placesell : na, 'Short', shape.triangledown, location.absolute, sigBear,                 size = size.tiny,  force_overlay = true)
-plotshape(showMarks and triggerLong  ? placebuy  : na, 'Long2', shape.triangleup,   location.absolute, color.new(sigBull, 50),  size = size.small, force_overlay = true)
-plotshape(showMarks and triggerShort ? placesell : na, 'Short2',shape.triangledown, location.absolute, color.new(sigBear, 50),  size = size.small, force_overlay = true)
-//}
-
-// ~~ ALERTS {
-alertcondition(stFlipUp, 'S3 Long Entry',  'ML RSI S3: Trend Pullback Long.')
-alertcondition(stFlipDn, 'S3 Short Entry', 'ML RSI S3: Trend Pullback Short.')
-//}
+// ─── ALERTS ──────────────────────────────────────────────────────────────────
+alertcondition(ta.crossover(mlRSI,  46), 'S3 Long Signal',  'ML RSI S3: Pullback Bounce Long setup.')
+alertcondition(ta.crossunder(mlRSI, 54), 'S3 Short Signal', 'ML RSI S3: Pullback Rejection Short setup.')
 
 // ═══════════════════════════════════════════════════════════════════
-// STRATEGIE S3 — ML RSI TREND PULLBACK
+// STRATEGIE S3 — ML RSI TREND PULLBACK v2
 // ═══════════════════════════════════════════════════════════════════
-// Profi-Ansatz: Kein Entry am Flip-Bar, sondern nach Konsolidierung.
-// In Bull-Trend: ML RSI fällt unter pbLvlL (Pullback), kreuzt zurück
-//   → Bounce-Entry. SL: ML ST-Linie + Puffer. TP: 2.5×SL-Distanz.
-// In Bear-Trend: ML RSI steigt über pbLvlS (Rejection), kreuzt zurück
-//   → Short-Entry. Mindest-Stance-Alter verhindert Fehlstarts.
-// Rank-Filter ≥ 50 blockiert Entry in niedriger KNN-Qualität.
+// Profi-Ansatz: Kein Entry am Flip-Bar — erst nach etabliertem Trend.
+// In Bull-Trend: mlRSI fällt unter 42 (Pullback) → kreuzt über 46 (Bounce).
+// In Bear-Trend: mlRSI steigt über 58 (Rejection) → kreuzt unter 54.
+// Filter: 60M HTF EMA50 + Session + Rank-Gate.
+// SL: ML ST-Linie + 0.4×ATR | TP: 3×R | BE: +1R
 // ═══════════════════════════════════════════════════════════════════
-grpS3    = "Strategy S3"
-minAge3  = input.int(5,      "Min Stance-Alter (Bars)", minval = 2, group = grpS3,
-             tooltip = "Trend muss min. X Bars etabliert sein. Verhindert Entry am Flip-Tag.")
-pbLvlL   = input.int(45,    "Pullback-Level Long",    minval = 30, maxval = 55, group = grpS3,
-             tooltip = "ML RSI muss diesen Wert unterschreiten (Rücksetzer) und dann wieder überschreiten (Bounce-Trigger).")
-pbLvlS   = input.int(55,    "Pullback-Level Short",   minval = 45, maxval = 70, group = grpS3,
-             tooltip = "ML RSI muss diesen Wert überschreiten (Rücksetzer) und dann wieder unterschreiten (Rejection-Trigger).")
-slBufS3  = input.float(0.4, "ST-Puffer × ATR",        step = 0.1, group = grpS3,
-             tooltip = "Puffer hinter ML Supertrend-Linie als ATR-Vielfaches.")
-rrS3     = input.float(2.5, "Reward:Risk",             step = 0.5, group = grpS3,
-             tooltip = "1:2.5 — Pullback-Entries haben bessere Einstiegspreise und erlauben höheres R:R.")
-rPctS3   = input.float(1.0, "Risiko / Trade (%)",     step = 0.1, group = grpS3)
-useBES3  = input.bool(true, "Break-Even Stop",         group = grpS3)
-beRS3    = input.float(1.0, "BE bei (×R)",             step = 0.1, group = grpS3)
-rnkGate3 = input.int(50,    "Mindest-Rank für Entry", minval = 0, maxval = 100, group = grpS3,
-             tooltip = "KNN-Rank muss mindestens diesen Wert haben. 50 = untere Hälfte wird blockiert.")
+grpS3 = 'Strategy S3 · Trend Pullback'
 
-// Etablierter Trend + kein Chop
-bullTrend3 = stanceState == 1  and stanceAge >= minAge3 and not ctx.chopNow
-bearTrend3 = stanceState == -1 and stanceAge >= minAge3 and not ctx.chopNow
+useHTF3  = input.bool(true,  '60M EMA50 HTF-Filter', group = grpS3,
+             tooltip = 'Long nur wenn Close > 60M-EMA50. Short nur wenn Close < 60M-EMA50.')
+sessH1_  = input.int(7,      'Session Start (UTC-h)', minval = 0, maxval = 23, inline = 'sess3', group = grpS3)
+sessH2_  = input.int(20,     'Session End (UTC-h)',   minval = 0, maxval = 23, inline = 'sess3', group = grpS3,
+             tooltip = '07–20 UTC = London Open bis New York Close.')
+minAge3  = input.int(5,      'Min Stance-Alter',      minval = 2, group = grpS3,
+             tooltip = 'Trend muss mind. X Bars etabliert sein — verhindert Pullback-Entry direkt nach dem Flip.')
+pbDipL   = input.int(42,     'Pullback Tief (Long)',  minval = 25, maxval = 49, group = grpS3,
+             tooltip = 'mlRSI muss unter diesen Wert fallen (tieferer Rücksetzer = besserer Einstiegspreis).')
+pbBncL   = input.int(46,     'Bounce Trigger (Long)', minval = 30, maxval = 52, group = grpS3,
+             tooltip = 'mlRSI kreuzt über diesen Wert nach dem Rücksetzer → Long-Entry.')
+pbDipS   = input.int(58,     'Rejection Hoch (Short)', minval = 51, maxval = 75, group = grpS3,
+             tooltip = 'mlRSI muss über diesen Wert steigen (höhere Gegenbewegung = besserer Short-Preis).')
+pbBncS   = input.int(54,     'Drop Trigger (Short)', minval = 48, maxval = 70, group = grpS3,
+             tooltip = 'mlRSI kreuzt unter diesen Wert nach der Gegenbewegung → Short-Entry.')
+slBufS3  = input.float(0.4,  'ST-Puffer × ATR',       step = 0.1, group = grpS3)
+rrS3     = input.float(3.0,  'Reward:Risk',            step = 0.5, group = grpS3,
+             tooltip = '1:3 — Pullback-Entries haben bessere Preise und erlauben höheres R:R.')
+rPctS3   = input.float(1.0,  'Risiko / Trade (%)',    step = 0.1, group = grpS3)
+useBES3  = input.bool(true,  'Break-Even Stop',        group = grpS3)
+beRS3    = input.float(1.0,  'BE bei (×R)',            step = 0.1, group = grpS3)
+rnkGate3 = input.int(45,     'Mindest-Rank',          minval = 0, maxval = 100, group = grpS3,
+             tooltip = 'KNN-Rank-Filter — blockiert Entry bei schwacher ML-Überzeugung.')
 
-// Pullback-Signal: RSI hat den Threshold durchbrochen und kommt zurück
-// Long:  mlRSI war unter pbLvlL (mind. 1 Bar) und kreuzt jetzt darüber
-// Short: mlRSI war über pbLvlS (mind. 1 Bar) und kreuzt jetzt darunter
-pbBounceL = ta.crossover(mlRSI,  pbLvlL)
-pbRejectS = ta.crossunder(mlRSI, pbLvlS)
+// HTF 60M EMA50
+htfEma3  = request.security(syminfo.tickerid, '60', ta.ema(close, 50), barmerge.gaps_off, barmerge.lookahead_off)
+htfBull3 = not useHTF3 or close > htfEma3
+htfBear3 = not useHTF3 or close < htfEma3
 
-goL3 = bullTrend3 and pbBounceL and setup.rank >= rnkGate3 and barstate.isconfirmed
-goS3 = bearTrend3 and pbRejectS and setup.rank >= rnkGate3 and barstate.isconfirmed
+// Handelssession UTC
+hUTC3   = hour(time, 'UTC')
+inSess3 = hUTC3 >= sessH1_ and hUTC3 < sessH2_
 
-// SL: ML Supertrend + Puffer | TP: rrS3 × SL-Distanz
+// Etablierter Trend
+bullTrend3 = stanceState == 1  and stanceAge >= minAge3 and stDir_ == 1  and not ctx.chopNow
+bearTrend3 = stanceState == -1 and stanceAge >= minAge3 and stDir_ == -1 and not ctx.chopNow
+
+// Pullback-State: RSI hat das Rücksetzer-Niveau erreicht
+var bool pbActivL = false
+var bool pbActivS = false
+pbActivL := mlRSI < pbDipL ? true  : mlRSI > pbBncL + 5 ? false : pbActivL
+pbActivS := mlRSI > pbDipS ? true  : mlRSI < pbBncS - 5 ? false : pbActivS
+
+// Bounce-Trigger: RSI kommt zurück in die Trendrichtung
+pbBounceL = pbActivL and ta.crossover(mlRSI,  pbBncL)
+pbRejectS = pbActivS and ta.crossunder(mlRSI, pbBncS)
+
+// Finale Einstiegssignale
+goL3 = bullTrend3 and pbBounceL and htfBull3 and inSess3 and setup.rank >= rnkGate3 and strategy.position_size == 0 and barstate.isconfirmed
+goS3 = bearTrend3 and pbRejectS and htfBear3 and inSess3 and setup.rank >= rnkGate3 and strategy.position_size == 0 and barstate.isconfirmed
+
+// Entry-Pfeile
+buyMark3  = ta.lowest(low,  3) - 0.3 * atrVal
+sellMark3 = ta.highest(high,3) + 0.3 * atrVal
+plotshape(showMarks and goL3 ? buyMark3  : na, 'S3 Long',  shape.triangleup,   location.absolute, sigBull, size = size.small, force_overlay = true)
+plotshape(showMarks and goS3 ? sellMark3 : na, 'S3 Short', shape.triangledown, location.absolute, sigBear, size = size.small, force_overlay = true)
+
+// SL / TP
 slPL3 = stLine_ - slBufS3 * atrVal
 slPS3 = stLine_ + slBufS3 * atrVal
 dL3   = math.max(close - slPL3, 0.5 * atrVal)
@@ -626,58 +587,54 @@ var float iSD3 = na
 var bool  bED3 = false
 
 // Long Entry
-if goL3 and strategy.position_size == 0
+if goL3
     aSL3 := slPL3
     aTP3 := tpL3
     iSD3 := dL3
     bED3 := false
-    strategy.entry("Long", strategy.long, qty = qL3, comment = "S3·PB▲" + str.tostring(math.round(setup.rank)))
-    strategy.exit("LX3", from_entry = "Long", stop = aSL3, limit = aTP3)
-    line.new(bar_index, aTP3, bar_index + 12, aTP3, color = color.new(color.lime, 0), width = 2, force_overlay = true)
-    line.new(bar_index, aSL3, bar_index + 12, aSL3, color = color.new(color.red,  0), width = 2, force_overlay = true)
+    pbActivL := false
+    strategy.entry('Long', strategy.long, qty = qL3, comment = 'S3·PB▲')
+    strategy.exit('LX3', from_entry = 'Long', stop = aSL3, limit = aTP3)
 
 // Short Entry
-if goS3 and strategy.position_size == 0
+if goS3
     aSL3 := slPS3
     aTP3 := tpS3
     iSD3 := dS3
     bED3 := false
-    strategy.entry("Short", strategy.short, qty = qS3, comment = "S3·PB▼" + str.tostring(math.round(setup.rank)))
-    strategy.exit("SX3", from_entry = "Short", stop = aSL3, limit = aTP3)
-    line.new(bar_index, aTP3, bar_index + 12, aTP3, color = color.new(color.lime, 0), width = 2, force_overlay = true)
-    line.new(bar_index, aSL3, bar_index + 12, aSL3, color = color.new(color.red,  0), width = 2, force_overlay = true)
+    pbActivS := false
+    strategy.entry('Short', strategy.short, qty = qS3, comment = 'S3·PB▼')
+    strategy.exit('SX3', from_entry = 'Short', stop = aSL3, limit = aTP3)
 
-// Break-Even + Exit-Update Long
+// Break-Even Long
 if strategy.position_size > 0 and not na(iSD3)
     ep3 = strategy.position_avg_price
     if useBES3 and not bED3 and high - ep3 >= beRS3 * iSD3
         aSL3 := math.max(aSL3, ep3)
         bED3 := true
-    strategy.exit("LX3", from_entry = "Long", stop = aSL3, limit = aTP3)
+    strategy.exit('LX3', from_entry = 'Long', stop = aSL3, limit = aTP3)
 
-// Break-Even + Exit-Update Short
+// Break-Even Short
 if strategy.position_size < 0 and not na(iSD3)
     ep3 = strategy.position_avg_price
     if useBES3 and not bED3 and ep3 - low >= beRS3 * iSD3
         aSL3 := math.min(aSL3, ep3)
         bED3 := true
-    strategy.exit("SX3", from_entry = "Short", stop = aSL3, limit = aTP3)
+    strategy.exit('SX3', from_entry = 'Short', stop = aSL3, limit = aTP3)
 
-// ML ST-Flip schließt Position sofort (Trend bricht zusammen)
+// ST-Flip Exit (Trend bricht zusammen)
 if strategy.position_size > 0 and stFlipDn
-    strategy.close("Long",  comment = "S3·ST↓")
+    strategy.close('Long',  comment = 'S3·ST↓')
 if strategy.position_size < 0 and stFlipUp
-    strategy.close("Short", comment = "S3·ST↑")
+    strategy.close('Short', comment = 'S3·ST↑')
 
-// State-Reset nach Trade-Ende
+// State-Reset
 if strategy.position_size == 0 and strategy.position_size[1] != 0
     aSL3 := na
     aTP3 := na
     iSD3 := na
     bED3 := false
 
-// Laufende SL/TP-Linien auf Preischart
-plot(strategy.position_size != 0 ? aSL3 : na, "S3 Stop-Loss",
-     color = color.new(color.red, 0), style = plot.style_linebr, linewidth = 2, force_overlay = true)
-plot(strategy.position_size != 0 ? aTP3 : na, "S3 Take-Profit",
-     color = color.new(color.lime,0), style = plot.style_linebr, linewidth = 2, force_overlay = true)
+// Laufende SL/TP Linien
+plot(strategy.position_size != 0 ? aSL3 : na, 'SL', color = color.new(color.red,  0), style = plot.style_linebr, linewidth = 2, force_overlay = true)
+plot(strategy.position_size != 0 ? aTP3 : na, 'TP', color = color.new(color.lime, 0), style = plot.style_linebr, linewidth = 2, force_overlay = true)
