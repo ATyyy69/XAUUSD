@@ -1,24 +1,17 @@
 //@version=6
 // Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
-// https://creativecommons.org/licenses/by-nc-sa/4.0/
 // Original Indicator: Machine Learning RSI | AI Classification & Ranking © Zeiierman
-// Strategy adaptation: entry / exit / risk management layer added on top of ML engine.
+// Strategy S2: ML RSI Regime Crossover
 // ═══════════════════════════════════════════════════════════════════
-// ML RSI Strategy [Zeiierman Engine]
+// KONZEPT:
+//   ML Engine definiert Regime (Bull/Bear via stanceState).
+//   Einstieg: ML RSI kreuzt die 50-Linie in Richtung des Regimes.
+//   SL: 1.5×ATR | TP: 1.8×ATR (1:1.2 R:R — maximiert Trefferquote).
+//   Exit: ML RSI kreuzt 50 zurück ODER Regime dreht gegen Trade.
+//   Mehr Trades als S1, höhere Selektivität als reiner ST-Flip.
 // ═══════════════════════════════════════════════════════════════════
-// EINSTIEG (wählbar):
-//   A) ML Signals   — KNN-Analog-Engine + Rank/Conf-Gates + Trend/Vol/Chop-Filter
-//   B) ST Flip Only — Reiner ML Supertrend Richtungswechsel (mehr Signale)
-//
-// SL (wählbar):
-//   Supertrend — hinter adaptivem ML Supertrend + ATR-Puffer (empfohlen)
-//   ATR        — fester X×ATR-Abstand vom Close
-//
-// TP:  Festes R:R-Verhältnis ab SL-Distanz (Standard 1:2)
-// BE:  Break-Even Stop bei +1R (optional)
-// ═══════════════════════════════════════════════════════════════════
-strategy('ML RSI Strategy [Zeiierman]',
-     shorttitle         = 'ML·RSI·S',
+strategy('ML RSI S2 · Regime',
+     shorttitle         = 'ML·S2·Regm',
      overlay            = false,
      pyramiding         = 0,
      default_qty_type   = strategy.percent_of_equity,
@@ -138,7 +131,7 @@ horizonBars = 4
 // ~~ Signals {
 showMarks    = input.bool(true,  'Show Signal Markers',                            inline = 'show', group = "Signals", tooltip = t5)
 paintBars    = input.bool(true,  'Candle coloring',                                inline = 'show', group = "Signals", tooltip = t6)
-gateRank     = input.int(55,     'Min Rank to Signal',    minval = 0, maxval = 100, group = "Signals", tooltip = t7)
+gateRank     = input.int(50,     'Min Rank to Signal',    minval = 0, maxval = 100, group = "Signals", tooltip = t7)
 gateConf     = input.int(40,     'Min Confidence to Signal', minval = 0, maxval = 100, group = "Signals", tooltip = t8)
 useTrendGate = input.bool(true,  'Trend Gate',                                      group = "Signals", tooltip = t9)
 useVolBand   = input.bool(true,  'Volatility Band',                    inline = 'vol', group = "Signals", tooltip = t10)
@@ -570,128 +563,109 @@ plotshape(showMarks and triggerShort ? placesell : na, 'Short2',shape.triangledo
 //}
 
 // ~~ ALERTS {
-alertcondition(triggerLong,              'Long Signal',      'ML RSI: Long signal fired.')
-alertcondition(triggerShort,             'Short Signal',     'ML RSI: Short signal fired.')
-alertcondition(triggerLong or triggerShort, 'Any Signal',   'ML RSI: New entry signal.')
-alertcondition(stFlipUp,                 'Trend Flip Up',    'ML Supertrend flipped to UPTREND.')
-alertcondition(stFlipDn,                 'Trend Flip Down',  'ML Supertrend flipped to DOWNTREND.')
-alertcondition(stFlipUp or stFlipDn,     'Any Trend Flip',   'ML Supertrend changed direction.')
-
-if barstate.isconfirmed
-    if triggerLong
-        alert('🟢 LONG  | ' + syminfo.ticker + ' (' + timeframe.period + ')  Rank ' + str.tostring(setup.rank, '#') + ' / Conf ' + str.tostring(setup.conf, '#'), alert.freq_once_per_bar_close)
-    if triggerShort
-        alert('🔴 SHORT | ' + syminfo.ticker + ' (' + timeframe.period + ')  Rank ' + str.tostring(setup.rank, '#') + ' / Conf ' + str.tostring(setup.conf, '#'), alert.freq_once_per_bar_close)
+alertcondition(stFlipUp, 'S2 Long Entry',  'ML RSI S2: Regime Crossover Long.')
+alertcondition(stFlipDn, 'S2 Short Entry', 'ML RSI S2: Regime Crossover Short.')
 //}
 
 // ═══════════════════════════════════════════════════════════════════
-// STRATEGY — ENTRY / EXIT / RISIKO-MANAGEMENT
+// STRATEGIE S2 — ML RSI REGIME CROSSOVER
 // ═══════════════════════════════════════════════════════════════════
-grpS    = "Strategy"
-entMode = input.string("ML Signals", "Entry-Modus",
-            options = ["ML Signals", "ST Flip Only"], group = grpS,
-            tooltip = "ML Signals: KNN+Rank+Conf gefiltert (weniger, höhere Qualität)\nST Flip Only: ML Supertrend-Richtungswechsel (häufiger)")
-slMeth  = input.string("ATR", "SL-Methode",
-            options = ["Supertrend", "ATR"], group = grpS,
-            tooltip = "ATR: fester Abstand vom Close in ATR-Vielfachen (Standard)\nSupertrend: SL hinter adaptivem ML-Supertrend + ATR-Puffer")
-slBuf   = input.float(0.3, "ST-Puffer × ATR",   step = 0.1, group = grpS,
-            tooltip = "Nur Supertrend-Methode: Abstand hinter ST-Linie als ATR-Vielfaches.")
-slMul   = input.float(1.0, "SL × ATR",           step = 0.5, group = grpS,
-            tooltip = "Nur ATR-Methode: SL = Close ± X × ATR(14). Standard 1.0 optimiert WR.")
-rrR     = input.float(1.0, "Reward:Risk",         step = 0.5, group = grpS,
-            tooltip = "TP = Einstieg ± R:R × SL-Distanz. 1:1 maximiert Trefferquote.")
-rPct    = input.float(1.0, "Risiko / Trade (%)",  step = 0.1, group = grpS,
-            tooltip = "Positionsgröße: Equity × Risiko% / SL-Distanz")
-useBE_  = input.bool(true,  "Break-Even Stop",    group = grpS,
-            tooltip = "Verschiebt SL auf Einstiegspreis sobald BE-Level erreicht.")
-beR_    = input.float(0.5,  "BE bei (×R)",         step = 0.1, group = grpS,
-            tooltip = "BE-Aktivierung bei 0.5R schützt früh vor Vollumlust.")
-useSTExit = input.bool(true, "Exit bei ST-Flip",  group = grpS,
-            tooltip = "Schließt Position sofort wenn ML-Supertrend gegen Trade dreht.")
+// Ansatz: ML-Regime definiert Bias. ML RSI kreuzt 50 als Trigger.
+// Einstieg NACH dem Flip (stanceAge≥1) — kein Flip-Bar-Abzug.
+// Eng gefasster SL/TP (1:1.2 R:R) = hohe Trefferquote.
+// Zusätzlicher Exit: Regime dreht gegen Position.
+// ═══════════════════════════════════════════════════════════════════
+grpS2    = "Strategy S2"
+slMulS2  = input.float(1.5,  "SL × ATR",           step = 0.5, group = grpS2,
+             tooltip = "Stop-Loss = Einstieg ± SL×ATR(14).")
+rrS2     = input.float(1.2,  "Reward:Risk",         step = 0.1, group = grpS2,
+             tooltip = "1:1.2 R:R maximiert Trefferquote bei RSI-Crossover-Strategien.")
+rPctS2   = input.float(1.0,  "Risiko / Trade (%)", step = 0.1, group = grpS2)
+useBES2  = input.bool(true,  "Break-Even Stop",    group = grpS2)
+beRS2    = input.float(0.6,  "BE bei (×R)",         step = 0.1, group = grpS2,
+             tooltip = "Früher BE bei 0.6R schützt gegen RSI-Fehlsignale.")
+minAge2  = input.int(1,      "Min Stance-Alter",    minval = 1, group = grpS2,
+             tooltip = "Stance muss mindestens X Bars aktiv sein (1 = ab 1. Bar nach Flip).")
 
-// Aktive Einstiegssignale (modus-abhängig)
-// triggerLong/Short already require flipLong/Short (stanceAge=0) — no age≥2 added
-goL = entMode == "ML Signals" ? triggerLong  : stFlipUp
-goS = entMode == "ML Signals" ? triggerShort : stFlipDn
+// Einstiegssignale: ML RSI kreuzt 50 in Regime-Richtung + Stance etabliert
+bullRegime2 = stanceState == 1  and stanceAge >= minAge2 and not ctx.chopNow
+bearRegime2 = stanceState == -1 and stanceAge >= minAge2 and not ctx.chopNow
+crossUp2    = ta.crossover(mlRSI,  50)
+crossDn2    = ta.crossunder(mlRSI, 50)
 
-// SL-Preis (Supertrend = hinter ML Supertrend + Puffer, ATR = fester Abstand)
-// stLine_ ist bei Long (stDir_==1) = stLong_ (Support-Boden), bei Short = stShort_ (Resistance-Decke)
-rawSlL = slMeth == "Supertrend" ? stLine_ - slBuf * atrVal : close - slMul * atrVal
-rawSlS = slMeth == "Supertrend" ? stLine_ + slBuf * atrVal : close + slMul * atrVal
+goL2 = bullRegime2 and crossUp2 and barstate.isconfirmed
+goS2 = bearRegime2 and crossDn2 and barstate.isconfirmed
 
-// Mindest-SL-Abstand: 0.5×ATR verhindert degenerierte SL
-dL = math.max(close - rawSlL, 0.5 * atrVal)
-dS = math.max(rawSlS - close, 0.5 * atrVal)
+// SL/TP
+dL2   = math.max(slMulS2 * atrVal, 0.4 * atrVal)
+dS2   = dL2
+tpL2  = close + rrS2 * dL2
+tpS2  = close - rrS2 * dS2
+slPL2 = close - dL2
+slPS2 = close + dS2
 
-slPL = close - dL
-slPS = close + dS
-tpL  = close + rrR * dL
-tpS  = close - rrR * dS
+rAmt2 = strategy.equity * rPctS2 / 100.0
+qL2   = dL2 > 0 ? rAmt2 / dL2 : na
+qS2   = dS2 > 0 ? rAmt2 / dS2 : na
 
-rAmt = strategy.equity * rPct / 100.0
-qL   = dL > 0 ? rAmt / dL : na
-qS   = dS > 0 ? rAmt / dS : na
-
-var float aSL = na
-var float aTP = na
-var float iSD = na
-var bool  bED = false
+var float aSL2 = na
+var float aTP2 = na
+var float iSD2 = na
+var bool  bED2 = false
 
 // Long Entry
-if goL and strategy.position_size == 0
-    aSL := slPL
-    aTP := tpL
-    iSD := dL
-    bED := false
-    strategy.entry("Long",  strategy.long,  qty = qL,
-                   comment = "ML↑ R:" + str.tostring(math.round(setup.rank)) + " C:" + str.tostring(math.round(setup.conf)))
-    strategy.exit("LX", from_entry = "Long",  stop = aSL, limit = aTP)
-    line.new(bar_index, tpL,  bar_index + 8, tpL,  color = color.new(color.lime, 0), width = 2, force_overlay = true)
-    line.new(bar_index, slPL, bar_index + 8, slPL, color = color.new(color.red,  0), width = 2, force_overlay = true)
+if goL2 and strategy.position_size == 0
+    aSL2 := slPL2
+    aTP2 := tpL2
+    iSD2 := dL2
+    bED2 := false
+    strategy.entry("Long", strategy.long, qty = qL2, comment = "S2·RSI▲50")
+    strategy.exit("LX2", from_entry = "Long", stop = aSL2, limit = aTP2)
+    line.new(bar_index, aTP2, bar_index + 10, aTP2, color = color.new(color.lime, 0), width = 2, force_overlay = true)
+    line.new(bar_index, aSL2, bar_index + 10, aSL2, color = color.new(color.red,  0), width = 2, force_overlay = true)
 
 // Short Entry
-if goS and strategy.position_size == 0
-    aSL := slPS
-    aTP := tpS
-    iSD := dS
-    bED := false
-    strategy.entry("Short", strategy.short, qty = qS,
-                   comment = "ML↓ R:" + str.tostring(math.round(setup.rank)) + " C:" + str.tostring(math.round(setup.conf)))
-    strategy.exit("SX", from_entry = "Short", stop = aSL, limit = aTP)
-    line.new(bar_index, tpS,  bar_index + 8, tpS,  color = color.new(color.lime, 0), width = 2, force_overlay = true)
-    line.new(bar_index, slPS, bar_index + 8, slPS, color = color.new(color.red,  0), width = 2, force_overlay = true)
+if goS2 and strategy.position_size == 0
+    aSL2 := slPS2
+    aTP2 := tpS2
+    iSD2 := dS2
+    bED2 := false
+    strategy.entry("Short", strategy.short, qty = qS2, comment = "S2·RSI▼50")
+    strategy.exit("SX2", from_entry = "Short", stop = aSL2, limit = aTP2)
+    line.new(bar_index, aTP2, bar_index + 10, aTP2, color = color.new(color.lime, 0), width = 2, force_overlay = true)
+    line.new(bar_index, aSL2, bar_index + 10, aSL2, color = color.new(color.red,  0), width = 2, force_overlay = true)
 
-// Break-Even + laufendes Exit-Update (Long)
-if strategy.position_size > 0 and not na(iSD)
-    ep = strategy.position_avg_price
-    if useBE_ and not bED and high - ep >= beR_ * iSD
-        aSL := math.max(aSL, ep)
-        bED := true
-    strategy.exit("LX", from_entry = "Long",  stop = aSL, limit = aTP)
+// Break-Even + Exit-Update Long
+if strategy.position_size > 0 and not na(iSD2)
+    ep2 = strategy.position_avg_price
+    if useBES2 and not bED2 and high - ep2 >= beRS2 * iSD2
+        aSL2 := math.max(aSL2, ep2)
+        bED2 := true
+    strategy.exit("LX2", from_entry = "Long", stop = aSL2, limit = aTP2)
 
-// Break-Even + laufendes Exit-Update (Short)
-if strategy.position_size < 0 and not na(iSD)
-    ep = strategy.position_avg_price
-    if useBE_ and not bED and ep - low >= beR_ * iSD
-        aSL := math.min(aSL, ep)
-        bED := true
-    strategy.exit("SX", from_entry = "Short", stop = aSL, limit = aTP)
+// Break-Even + Exit-Update Short
+if strategy.position_size < 0 and not na(iSD2)
+    ep2 = strategy.position_avg_price
+    if useBES2 and not bED2 and ep2 - low >= beRS2 * iSD2
+        aSL2 := math.min(aSL2, ep2)
+        bED2 := true
+    strategy.exit("SX2", from_entry = "Short", stop = aSL2, limit = aTP2)
 
-// Supertrend-Flip Exit (schließt Position wenn ML-ST gegen Trade dreht)
-if strategy.position_size > 0 and stFlipDn and useSTExit
-    strategy.close("Long",  comment = "ST-Flip↓")
-if strategy.position_size < 0 and stFlipUp and useSTExit
-    strategy.close("Short", comment = "ST-Flip↑")
+// Regime-Flip Exit: wenn Stance gegen Position dreht
+if strategy.position_size > 0 and stanceState == -1
+    strategy.close("Long",  comment = "S2·Regime↓")
+if strategy.position_size < 0 and stanceState == 1
+    strategy.close("Short", comment = "S2·Regime↑")
 
-// State zurücksetzen nach Trade-Ende
+// State-Reset nach Trade-Ende
 if strategy.position_size == 0 and strategy.position_size[1] != 0
-    aSL := na
-    aTP := na
-    iSD := na
-    bED := false
+    aSL2 := na
+    aTP2 := na
+    iSD2 := na
+    bED2 := false
 
-// Laufende SL/TP-Linien (Preischart, nur bei offener Position)
-plot(strategy.position_size != 0 ? aSL : na, "Stop-Loss",
-     color = color.new(color.red,  0), style = plot.style_linebr, linewidth = 2, force_overlay = true)
-plot(strategy.position_size != 0 ? aTP : na, "Take-Profit",
-     color = color.new(color.lime, 0), style = plot.style_linebr, linewidth = 2, force_overlay = true)
+// Laufende SL/TP-Linien auf Preischart
+plot(strategy.position_size != 0 ? aSL2 : na, "S2 Stop-Loss",
+     color = color.new(color.red, 0), style = plot.style_linebr, linewidth = 2, force_overlay = true)
+plot(strategy.position_size != 0 ? aTP2 : na, "S2 Take-Profit",
+     color = color.new(color.lime,0), style = plot.style_linebr, linewidth = 2, force_overlay = true)
