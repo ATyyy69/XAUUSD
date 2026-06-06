@@ -252,6 +252,7 @@ def bt_s2(df, ind, p):
     cl=df.close.values; hi=df.high.values; lo=df.low.values; hr=df.index.hour; N=len(cl)
     stance=ind['stance']; stance_age=ind['stance_age']
     ml_rsi=ind['ml_rsi']; atr=ind['atr']; chop=ind['chop']
+    td=ind['td']
     htf_bull=ind['htf_bull']; htf_bear=ind['htf_bear']
     cross_l = p.get('cross_l', 52)   # Long crossover level (default 52)
     cross_s = p.get('cross_s', 48)   # Short crossunder level (default 48)
