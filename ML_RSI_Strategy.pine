@@ -138,8 +138,8 @@ horizonBars = 4
 // ~~ Signals {
 showMarks    = input.bool(true,  'Show Signal Markers',                            inline = 'show', group = "Signals", tooltip = t5)
 paintBars    = input.bool(true,  'Candle coloring',                                inline = 'show', group = "Signals", tooltip = t6)
-gateRank     = input.int(60,     'Min Rank to Signal',    minval = 0, maxval = 100, group = "Signals", tooltip = t7)
-gateConf     = input.int(50,     'Min Confidence to Signal', minval = 0, maxval = 100, group = "Signals", tooltip = t8)
+gateRank     = input.int(70,     'Min Rank to Signal',    minval = 0, maxval = 100, group = "Signals", tooltip = t7)
+gateConf     = input.int(60,     'Min Confidence to Signal', minval = 0, maxval = 100, group = "Signals", tooltip = t8)
 useTrendGate = input.bool(true,  'Trend Gate',                                      group = "Signals", tooltip = t9)
 useVolBand   = input.bool(true,  'Volatility Band',                    inline = 'vol', group = "Signals", tooltip = t10)
 volBandLo    = input.int(20,     'Min Vol Rank',          minval = 0, maxval = 100, inline = 'vol', group = "Signals", tooltip = t11)
@@ -591,24 +591,27 @@ grpS    = "Strategy"
 entMode = input.string("ML Signals", "Entry-Modus",
             options = ["ML Signals", "ST Flip Only"], group = grpS,
             tooltip = "ML Signals: KNN+Rank+Conf gefiltert (weniger, höhere Qualität)\nST Flip Only: ML Supertrend-Richtungswechsel (häufiger)")
-slMeth  = input.string("Supertrend", "SL-Methode",
+slMeth  = input.string("ATR", "SL-Methode",
             options = ["Supertrend", "ATR"], group = grpS,
-            tooltip = "Supertrend: SL hinter adaptivem ML-Supertrend + ATR-Puffer (empfohlen)\nATR: fester Abstand vom Close in ATR-Vielfachen")
+            tooltip = "ATR: fester Abstand vom Close in ATR-Vielfachen (Standard)\nSupertrend: SL hinter adaptivem ML-Supertrend + ATR-Puffer")
 slBuf   = input.float(0.3, "ST-Puffer × ATR",   step = 0.1, group = grpS,
             tooltip = "Nur Supertrend-Methode: Abstand hinter ST-Linie als ATR-Vielfaches.")
-slMul   = input.float(2.0, "SL × ATR",           step = 0.5, group = grpS,
-            tooltip = "Nur ATR-Methode: SL = Close ± X × ATR(14)")
-rrR     = input.float(2.0, "Reward:Risk",         step = 0.5, group = grpS,
-            tooltip = "TP = Einstieg ± R:R × SL-Distanz. Standard 2.0 = 1:2.")
+slMul   = input.float(1.0, "SL × ATR",           step = 0.5, group = grpS,
+            tooltip = "Nur ATR-Methode: SL = Close ± X × ATR(14). Standard 1.0 optimiert WR.")
+rrR     = input.float(1.0, "Reward:Risk",         step = 0.5, group = grpS,
+            tooltip = "TP = Einstieg ± R:R × SL-Distanz. 1:1 maximiert Trefferquote.")
 rPct    = input.float(1.0, "Risiko / Trade (%)",  step = 0.1, group = grpS,
             tooltip = "Positionsgröße: Equity × Risiko% / SL-Distanz")
 useBE_  = input.bool(true,  "Break-Even Stop",    group = grpS,
-            tooltip = "Verschiebt SL auf Einstiegspreis sobald +1R erreicht.")
-beR_    = input.float(1.0,  "BE bei (×R)",         step = 0.1, group = grpS)
+            tooltip = "Verschiebt SL auf Einstiegspreis sobald BE-Level erreicht.")
+beR_    = input.float(0.5,  "BE bei (×R)",         step = 0.1, group = grpS,
+            tooltip = "BE-Aktivierung bei 0.5R schützt früh vor Vollumlust.")
+useSTExit = input.bool(true, "Exit bei ST-Flip",  group = grpS,
+            tooltip = "Schließt Position sofort wenn ML-Supertrend gegen Trade dreht.")
 
-// Aktive Einstiegssignale (modus-abhängig)
-goL = entMode == "ML Signals" ? triggerLong  : stFlipUp
-goS = entMode == "ML Signals" ? triggerShort : stFlipDn
+// Aktive Einstiegssignale (modus-abhängig, stanceAge≥2 = bestätigter Stance)
+goL = entMode == "ML Signals" ? (triggerLong  and stanceAge >= 2) : stFlipUp
+goS = entMode == "ML Signals" ? (triggerShort and stanceAge >= 2) : stFlipDn
 
 // SL-Preis (Supertrend = hinter ML Supertrend + Puffer, ATR = fester Abstand)
 // stLine_ ist bei Long (stDir_==1) = stLong_ (Support-Boden), bei Short = stShort_ (Resistance-Decke)
@@ -672,6 +675,12 @@ if strategy.position_size < 0 and not na(iSD)
         aSL := math.min(aSL, ep)
         bED := true
     strategy.exit("SX", from_entry = "Short", stop = aSL, limit = aTP)
+
+// Supertrend-Flip Exit (schließt Position wenn ML-ST gegen Trade dreht)
+if strategy.position_size > 0 and stFlipDn and useSTExit
+    strategy.close("Long",  comment = "ST-Flip↓")
+if strategy.position_size < 0 and stFlipUp and useSTExit
+    strategy.close("Short", comment = "ST-Flip↑")
 
 // State zurücksetzen nach Trade-Ende
 if strategy.position_size == 0 and strategy.position_size[1] != 0
